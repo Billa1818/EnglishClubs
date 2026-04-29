@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   User,
   Mail,
@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
   Select,
   SelectContent,
@@ -39,14 +40,49 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { useAuth } from "@/lib/auth-context"
-import { sessions, attendances, fccProgressions, members } from "@/lib/mock-data"
+import { createClient as createBrowserSupabaseClient } from "@/lib/supabase/client"
+import { sessions, attendances, fccProgressions } from "@/lib/mock-data"
+import { Spinner } from "@/components/ui/spinner"
+
+function mapClientAuthError(message: string) {
+  const normalized = message.toLowerCase()
+
+  if (normalized.includes("invalid login credentials")) {
+    return "Le mot de passe actuel est incorrect."
+  }
+
+  if (normalized.includes("password should be at least")) {
+    return "Le mot de passe ne respecte pas les criteres de securite."
+  }
+
+  if (normalized.includes("same_password")) {
+    return "Le nouveau mot de passe doit etre different de l'ancien."
+  }
+
+  return message
+}
+
+function mapProfileError(message: string, code?: string) {
+  if (code === "23505" || message.toLowerCase().includes("duplicate key")) {
+    return "Ce pseudo est deja utilise. Choisissez-en un autre."
+  }
+
+  return "Impossible de mettre a jour le profil pour le moment."
+}
 
 export default function MemberProfilePage() {
-  const { user } = useAuth()
+  const { user, member, refreshProfile, isLoading } = useAuth()
+  const supabase = useMemo(() => createBrowserSupabaseClient(), [])
   const [isEditing, setIsEditing] = useState(false)
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false)
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
+  const [isProfileLoading, setIsProfileLoading] = useState(false)
+  const [isPasswordLoading, setIsPasswordLoading] = useState(false)
+  const [profileSuccess, setProfileSuccess] = useState(false)
+  const [profileError, setProfileError] = useState("")
+  const [passwordSuccess, setPasswordSuccess] = useState(false)
+  const [passwordError, setPasswordError] = useState("")
   
   // Form state
   const [firstName, setFirstName] = useState(user?.firstName || "")
@@ -59,10 +95,28 @@ export default function MemberProfilePage() {
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
 
+  useEffect(() => {
+    if (!user) {
+      return
+    }
+
+    setFirstName(user.firstName)
+    setLastName(user.lastName)
+    setPseudo(user.pseudo)
+    setEnglishLevel(user.englishLevel)
+  }, [user])
+
+  if (isLoading) {
+    return (
+      <div className="flex h-full min-h-[320px] items-center justify-center">
+        <Spinner className="h-8 w-8" />
+      </div>
+    )
+  }
+
   if (!user) return null
 
   // Get user stats
-  const member = members.find(m => m.user.id === user.id)
   const userAttendances = attendances.filter(a => a.user.id === user.id)
   const userFCCProgressions = fccProgressions.filter(p => p.user.id === user.id)
   
@@ -74,19 +128,102 @@ export default function MemberProfilePage() {
   
   const completedCertificates = userFCCProgressions.filter(p => p.certificateName).length
 
-  const handleSaveProfile = () => {
-    // In real app, this would call an API
-    console.log("Saving profile:", { firstName, lastName, pseudo, englishLevel })
+  const handleSaveProfile = async () => {
+    setProfileError("")
+    setProfileSuccess(false)
+
+    const nextFirstName = firstName.trim()
+    const nextLastName = lastName.trim()
+    const nextPseudo = pseudo.trim()
+
+    if (!nextFirstName || !nextLastName || !nextPseudo) {
+      setProfileError("Tous les champs de profil sont obligatoires.")
+      return
+    }
+
+    setIsProfileLoading(true)
+
+    const { error: profileUpdateError } = await supabase
+      .from("profiles")
+      .update({
+        first_name: nextFirstName,
+        last_name: nextLastName,
+        pseudo: nextPseudo,
+        english_level: englishLevel,
+      })
+      .eq("id", user.id)
+
+    if (profileUpdateError) {
+      setProfileError(mapProfileError(profileUpdateError.message, profileUpdateError.code))
+      setIsProfileLoading(false)
+      return
+    }
+
+    const { error: authUpdateError } = await supabase.auth.updateUser({
+      data: {
+        first_name: nextFirstName,
+        last_name: nextLastName,
+        pseudo: nextPseudo,
+        english_level: englishLevel,
+      },
+    })
+
+    if (authUpdateError) {
+      setProfileError(mapClientAuthError(authUpdateError.message))
+      setIsProfileLoading(false)
+      return
+    }
+
+    await refreshProfile()
+
+    setProfileSuccess(true)
     setIsEditing(false)
+    setIsProfileLoading(false)
   }
 
-  const handleChangePassword = () => {
-    // In real app, this would call an API
-    console.log("Changing password")
+  const handleChangePassword = async () => {
+    setPasswordError("")
+    setPasswordSuccess(false)
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      setPasswordError("Veuillez remplir tous les champs du mot de passe.")
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError("Les mots de passe ne correspondent pas.")
+      return
+    }
+
+    if (newPassword.length < 8) {
+      setPasswordError("Le nouveau mot de passe doit contenir au moins 8 caracteres.")
+      return
+    }
+
+    if (newPassword === currentPassword) {
+      setPasswordError("Le nouveau mot de passe doit etre different de l'ancien.")
+      return
+    }
+
+    setIsPasswordLoading(true)
+
+    const { error: updatePasswordError } = await supabase.auth.updateUser({
+      password: newPassword,
+      current_password: currentPassword,
+    })
+
+    if (updatePasswordError) {
+      setPasswordError(mapClientAuthError(updatePasswordError.message))
+      setIsPasswordLoading(false)
+      return
+    }
+
+    setPasswordSuccess(true)
     setIsPasswordDialogOpen(false)
     setCurrentPassword("")
     setNewPassword("")
     setConfirmPassword("")
+    setIsPasswordLoading(false)
   }
 
   const getLevelLabel = (level: string) => {
@@ -125,18 +262,34 @@ export default function MemberProfilePage() {
                   </Button>
                 ) : (
                   <div className="flex gap-2">
-                    <Button variant="outline" onClick={() => setIsEditing(false)}>
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsEditing(false)}
+                      disabled={isProfileLoading}
+                    >
                       Annuler
                     </Button>
-                    <Button onClick={handleSaveProfile}>
+                    <Button onClick={handleSaveProfile} disabled={isProfileLoading}>
                       <Save className="mr-2 h-4 w-4" />
-                      Enregistrer
+                      {isProfileLoading ? "Enregistrement..." : "Enregistrer"}
                     </Button>
                   </div>
                 )}
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
+              {profileError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{profileError}</AlertDescription>
+                </Alert>
+              )}
+
+              {profileSuccess && (
+                <Alert className="border-green-500 bg-green-50 text-green-700">
+                  <AlertDescription>Profil mis a jour avec succes.</AlertDescription>
+                </Alert>
+              )}
+
               {/* Avatar */}
               <div className="flex items-center gap-6">
                 <div className="relative">
@@ -176,7 +329,11 @@ export default function MemberProfilePage() {
                     <Input
                       id="firstName"
                       value={firstName}
-                      onChange={(e) => setFirstName(e.target.value)}
+                      onChange={(e) => {
+                        setFirstName(e.target.value)
+                        setProfileError("")
+                        setProfileSuccess(false)
+                      }}
                     />
                   ) : (
                     <p className="py-2 text-foreground">{user.firstName}</p>
@@ -188,7 +345,11 @@ export default function MemberProfilePage() {
                     <Input
                       id="lastName"
                       value={lastName}
-                      onChange={(e) => setLastName(e.target.value)}
+                      onChange={(e) => {
+                        setLastName(e.target.value)
+                        setProfileError("")
+                        setProfileSuccess(false)
+                      }}
                     />
                   ) : (
                     <p className="py-2 text-foreground">{user.lastName}</p>
@@ -200,7 +361,11 @@ export default function MemberProfilePage() {
                     <Input
                       id="pseudo"
                       value={pseudo}
-                      onChange={(e) => setPseudo(e.target.value)}
+                      onChange={(e) => {
+                        setPseudo(e.target.value)
+                        setProfileError("")
+                        setProfileSuccess(false)
+                      }}
                     />
                   ) : (
                     <p className="py-2 text-foreground">@{user.pseudo}</p>
@@ -209,7 +374,14 @@ export default function MemberProfilePage() {
                 <div className="space-y-2">
                   <Label htmlFor="level">Niveau d&apos;anglais</Label>
                   {isEditing ? (
-                    <Select value={englishLevel} onValueChange={(value) => setEnglishLevel(value as "beginner" | "intermediate" | "advanced")}>
+                    <Select
+                      value={englishLevel}
+                      onValueChange={(value) => {
+                        setEnglishLevel(value as "beginner" | "intermediate" | "advanced")
+                        setProfileError("")
+                        setProfileSuccess(false)
+                      }}
+                    >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -250,6 +422,12 @@ export default function MemberProfilePage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {passwordSuccess && (
+                <Alert className="mb-4 border-green-500 bg-green-50 text-green-700">
+                  <AlertDescription>Mot de passe modifie avec succes.</AlertDescription>
+                </Alert>
+              )}
+
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
@@ -274,6 +452,12 @@ export default function MemberProfilePage() {
                       </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
+                      {passwordError && (
+                        <Alert variant="destructive">
+                          <AlertDescription>{passwordError}</AlertDescription>
+                        </Alert>
+                      )}
+
                       <div className="space-y-2">
                         <Label htmlFor="currentPassword">Mot de passe actuel</Label>
                         <div className="relative">
@@ -281,7 +465,10 @@ export default function MemberProfilePage() {
                             id="currentPassword"
                             type={showCurrentPassword ? "text" : "password"}
                             value={currentPassword}
-                            onChange={(e) => setCurrentPassword(e.target.value)}
+                            onChange={(e) => {
+                              setCurrentPassword(e.target.value)
+                              setPasswordError("")
+                            }}
                           />
                           <Button
                             type="button"
@@ -305,7 +492,10 @@ export default function MemberProfilePage() {
                             id="newPassword"
                             type={showNewPassword ? "text" : "password"}
                             value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
+                            onChange={(e) => {
+                              setNewPassword(e.target.value)
+                              setPasswordError("")
+                            }}
                           />
                           <Button
                             type="button"
@@ -328,7 +518,10 @@ export default function MemberProfilePage() {
                           id="confirmPassword"
                           type="password"
                           value={confirmPassword}
-                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          onChange={(e) => {
+                            setConfirmPassword(e.target.value)
+                            setPasswordError("")
+                          }}
                         />
                       </div>
                     </div>
@@ -338,9 +531,14 @@ export default function MemberProfilePage() {
                       </Button>
                       <Button 
                         onClick={handleChangePassword}
-                        disabled={!currentPassword || !newPassword || newPassword !== confirmPassword}
+                        disabled={
+                          isPasswordLoading ||
+                          !currentPassword ||
+                          !newPassword ||
+                          newPassword !== confirmPassword
+                        }
                       >
-                        Modifier
+                        {isPasswordLoading ? "Modification..." : "Modifier"}
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -383,7 +581,7 @@ export default function MemberProfilePage() {
               <div>
                 <p className="text-sm font-medium mb-3">Membre depuis</p>
                 <p className="text-muted-foreground">
-                  {member ? new Date(member.joinedAt).toLocaleDateString("fr-FR", {
+                  {member ? new Date(member.joined_at).toLocaleDateString("fr-FR", {
                     day: "numeric",
                     month: "long",
                     year: "numeric"

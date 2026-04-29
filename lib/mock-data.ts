@@ -1145,7 +1145,7 @@ export const invitations: Invitation[] = [
 export const appConfig: AppConfig = {
   id: "config1",
   appName: "English Club",
-  accessType: "invitation",
+  accessType: "open",
   scheduleDays: ["saturday"],
   startTime: "18:00",
   endTime: "20:00",

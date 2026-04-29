@@ -1,12 +1,14 @@
 "use client"
 
-import { useState } from "react"
 import Link from "next/link"
-import { Clock, CheckCircle, XCircle, Mail, ArrowLeft, RefreshCw } from "lucide-react"
+import { Clock, CheckCircle, XCircle, Mail, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { pendingRegistrations } from "@/lib/mock-data"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { useAuth } from "@/lib/auth-context"
+
+type PendingStatus = "pending_email" | "pending_admin" | "approved" | "rejected"
 
 const statusConfig = {
   pending_email: {
@@ -14,16 +16,18 @@ const statusConfig = {
     color: "text-amber-600",
     bgColor: "bg-amber-100",
     badgeVariant: "outline" as const,
-    title: "Verification de l&apos;email en attente",
-    description: "Veuillez verifier votre adresse email en cliquant sur le lien que nous vous avons envoye.",
+    title: "Verification email en attente",
+    description:
+      "Veuillez verifier votre adresse email en cliquant sur le lien que nous vous avons envoye.",
   },
   pending_admin: {
     icon: Clock,
     color: "text-blue-600",
     bgColor: "bg-blue-100",
     badgeVariant: "secondary" as const,
-    title: "En attente d&apos;approbation",
-    description: "Votre demande d&apos;adhesion est en cours d&apos;examen par un administrateur. Vous recevrez un email des que votre compte sera active.",
+    title: "En attente d'approbation",
+    description:
+      "Votre demande d'adhesion est en cours d'examen par un administrateur.",
   },
   approved: {
     icon: CheckCircle,
@@ -31,7 +35,8 @@ const statusConfig = {
     bgColor: "bg-green-100",
     badgeVariant: "default" as const,
     title: "Demande approuvee",
-    description: "Votre demande d&apos;adhesion a ete approuvee. Vous pouvez maintenant vous connecter.",
+    description:
+      "Votre demande d'adhesion a ete approuvee. Vous pouvez maintenant acceder a votre espace.",
   },
   rejected: {
     icon: XCircle,
@@ -39,24 +44,66 @@ const statusConfig = {
     bgColor: "bg-destructive/10",
     badgeVariant: "destructive" as const,
     title: "Demande refusee",
-    description: "Votre demande d&apos;adhesion a ete refusee.",
+    description: "Votre demande d'adhesion a ete refusee ou votre compte est suspendu.",
   },
 }
 
+function getStatusLabel(status: PendingStatus) {
+  if (status === "pending_email") return "Email non verifie"
+  if (status === "pending_admin") return "En attente"
+  if (status === "approved") return "Approuve"
+  return "Refuse"
+}
+
 export default function PendingPage() {
-  // Mock: Get the first pending registration
-  const registration = pendingRegistrations[0]
-  const status = registration?.status || "pending_admin"
+  const { authUser, profile, member, authError, isLoading, isAuthenticated } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold tracking-tight text-foreground text-center">
+          Verification de votre statut...
+        </h1>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="space-y-6">
+        <div className="space-y-2 text-center">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">
+            Connectez-vous pour voir votre statut
+          </h1>
+          <p className="text-muted-foreground">
+            Vous devez etre connecte pour suivre l'etat de votre inscription.
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          <Button asChild className="w-full" size="lg">
+            <Link href="/login">Se connecter</Link>
+          </Button>
+          <Button asChild variant="outline" className="w-full">
+            <Link href="/register">Creer un compte</Link>
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  let status: PendingStatus = "pending_admin"
+
+  if (!authUser?.email_confirmed_at) {
+    status = "pending_email"
+  } else if (member?.status === "active") {
+    status = "approved"
+  } else if (member?.status === "suspended" || member?.status === "removed") {
+    status = "rejected"
+  }
+
   const config = statusConfig[status]
   const Icon = config.icon
-
-  const [isResending, setIsResending] = useState(false)
-
-  const handleResendEmail = async () => {
-    setIsResending(true)
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    setIsResending(false)
-  }
 
   const steps = [
     {
@@ -70,7 +117,7 @@ export default function PendingPage() {
       current: status === "pending_email",
     },
     {
-      label: "Approbation admin",
+      label: "Validation admin",
       completed: status === "approved",
       current: status === "pending_admin",
     },
@@ -92,6 +139,12 @@ export default function PendingPage() {
       </Link>
 
       <div className="space-y-6">
+        {authError && (
+          <Alert variant="destructive">
+            <AlertDescription>{authError}</AlertDescription>
+          </Alert>
+        )}
+
         <div className="flex justify-center">
           <div className={`flex h-20 w-20 items-center justify-center rounded-full ${config.bgColor}`}>
             <Icon className={`h-10 w-10 ${config.color}`} />
@@ -100,26 +153,12 @@ export default function PendingPage() {
 
         <div className="space-y-2 text-center">
           <Badge variant={config.badgeVariant} className="mb-2">
-            {status === "pending_email" && "Email non verifie"}
-            {status === "pending_admin" && "En attente"}
-            {status === "approved" && "Approuve"}
-            {status === "rejected" && "Refuse"}
+            {getStatusLabel(status)}
           </Badge>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            {status === "pending_email" && "Verifiez votre email"}
-            {status === "pending_admin" && "Demande en cours de traitement"}
-            {status === "approved" && "Bienvenue dans English Club !"}
-            {status === "rejected" && "Demande refusee"}
-          </h1>
-          <p className="text-muted-foreground">
-            {status === "pending_email" && "Veuillez verifier votre adresse email pour continuer."}
-            {status === "pending_admin" && "Un administrateur examinera votre demande bientot."}
-            {status === "approved" && "Votre compte est pret. Connectez-vous pour commencer."}
-            {status === "rejected" && "Contactez un administrateur pour plus d&apos;informations."}
-          </p>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{config.title}</h1>
+          <p className="text-muted-foreground">{config.description}</p>
         </div>
 
-        {/* Progress steps */}
         <Card>
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
@@ -162,88 +201,61 @@ export default function PendingPage() {
           </CardContent>
         </Card>
 
-        {/* Registration details */}
-        {registration && (
-          <Card>
-            <CardContent className="p-6 space-y-4">
-              <h3 className="font-semibold text-foreground">Details de votre inscription</h3>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <p className="text-muted-foreground">Nom</p>
-                  <p className="font-medium">{registration.firstName} {registration.lastName}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Pseudo</p>
-                  <p className="font-medium">{registration.pseudo}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Email</p>
-                  <p className="font-medium">{registration.email}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Niveau d&apos;anglais</p>
-                  <p className="font-medium capitalize">{registration.englishLevel}</p>
-                </div>
-                <div className="col-span-2">
-                  <p className="text-muted-foreground">Date de demande</p>
-                  <p className="font-medium">
-                    {new Date(registration.requestedAt).toLocaleDateString("fr-FR", {
-                      day: "numeric",
-                      month: "long",
-                      year: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </p>
-                </div>
+        <Card>
+          <CardContent className="p-6 space-y-4">
+            <h3 className="font-semibold text-foreground">Details de votre inscription</h3>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground">Nom</p>
+                <p className="font-medium">
+                  {profile?.first_name || "-"} {profile?.last_name || ""}
+                </p>
               </div>
-            </CardContent>
-          </Card>
-        )}
+              <div>
+                <p className="text-muted-foreground">Pseudo</p>
+                <p className="font-medium">{profile?.pseudo || "-"}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Email</p>
+                <p className="font-medium">{authUser?.email || "-"}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Niveau d'anglais</p>
+                <p className="font-medium capitalize">{profile?.english_level || "-"}</p>
+              </div>
+              <div className="col-span-2">
+                <p className="text-muted-foreground">Date de demande</p>
+                <p className="font-medium">
+                  {member?.created_at
+                    ? new Date(member.created_at).toLocaleDateString("fr-FR", {
+                        day: "numeric",
+                        month: "long",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : "-"}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
-        {/* Actions */}
         <div className="space-y-4">
-          {status === "pending_email" && (
-            <Button
-              onClick={handleResendEmail}
-              className="w-full"
-              size="lg"
-              disabled={isResending}
-            >
-              {isResending ? (
-                <>
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Envoi en cours...
-                </>
-              ) : (
-                <>
-                  <Mail className="mr-2 h-4 w-4" />
-                  Renvoyer l&apos;email de verification
-                </>
-              )}
-            </Button>
-          )}
-
           {status === "approved" && (
             <Button asChild className="w-full" size="lg">
-              <Link href="/login">Se connecter</Link>
+              <Link href={member?.role === "admin" ? "/dashboard" : "/member"}>
+                Acceder a mon espace
+              </Link>
             </Button>
           )}
 
-          {status === "rejected" && (
-            <Button asChild className="w-full" size="lg">
-              <Link href="/register">Nouvelle inscription</Link>
+          {status !== "approved" && (
+            <Button asChild variant="outline" className="w-full" size="lg">
+              <Link href="/login">Retour a la connexion</Link>
             </Button>
           )}
         </div>
-
-        {/* Help text */}
-        <p className="text-center text-sm text-muted-foreground">
-          Besoin d&apos;aide?{" "}
-          <Link href="#" className="text-primary font-medium hover:underline">
-            Contactez-nous
-          </Link>
-        </p>
       </div>
     </div>
   )

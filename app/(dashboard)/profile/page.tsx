@@ -1,7 +1,6 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { useEffect, useMemo, useState } from "react"
 import {
   User,
   Mail,
@@ -35,7 +34,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { currentUser, members, attendances, fccProgressions, sessions } from "@/lib/mock-data"
+import { useAuth } from "@/lib/auth-context"
+import { createClient as createBrowserSupabaseClient } from "@/lib/supabase/client"
+import { attendances, fccProgressions, sessions } from "@/lib/mock-data"
+import { Spinner } from "@/components/ui/spinner"
 
 const englishLevels = [
   { value: "beginner", label: "Debutant" },
@@ -43,18 +45,42 @@ const englishLevels = [
   { value: "advanced", label: "Avance" },
 ]
 
+function mapClientAuthError(message: string) {
+  const normalized = message.toLowerCase()
+
+  if (normalized.includes("invalid login credentials")) {
+    return "Le mot de passe actuel est incorrect."
+  }
+
+  if (normalized.includes("password should be at least")) {
+    return "Le mot de passe ne respecte pas les criteres de securite."
+  }
+
+  if (normalized.includes("same_password")) {
+    return "Le nouveau mot de passe doit etre different de l'ancien."
+  }
+
+  return message
+}
+
+function mapProfileError(message: string, code?: string) {
+  if (code === "23505" || message.toLowerCase().includes("duplicate key")) {
+    return "Ce pseudo est deja utilise. Choisissez-en un autre."
+  }
+
+  return "Impossible de mettre a jour le profil pour le moment."
+}
+
 export default function ProfilePage() {
-  const router = useRouter()
-  const member = members.find((m) => m.user.id === currentUser.id)
-  const userAttendances = attendances.filter((a) => a.user.id === currentUser.id)
-  const userFCCProgress = fccProgressions.filter((p) => p.user.id === currentUser.id)
+  const { user, member, isLoading, refreshProfile } = useAuth()
+  const supabase = useMemo(() => createBrowserSupabaseClient(), [])
 
   const [profileData, setProfileData] = useState({
-    firstName: currentUser.firstName,
-    lastName: currentUser.lastName,
-    pseudo: currentUser.pseudo,
-    email: currentUser.email,
-    englishLevel: currentUser.englishLevel,
+    firstName: "",
+    lastName: "",
+    pseudo: "",
+    email: "",
+    englishLevel: "beginner" as "beginner" | "intermediate" | "advanced",
   })
 
   const [passwordData, setPasswordData] = useState({
@@ -75,6 +101,35 @@ export default function ProfilePage() {
   const [passwordSuccess, setPasswordSuccess] = useState(false)
   const [profileError, setProfileError] = useState("")
   const [passwordError, setPasswordError] = useState("")
+
+  useEffect(() => {
+    if (!user) {
+      return
+    }
+
+    setProfileData({
+      firstName: user.firstName,
+      lastName: user.lastName,
+      pseudo: user.pseudo,
+      email: user.email,
+      englishLevel: user.englishLevel,
+    })
+  }, [user])
+
+  if (isLoading) {
+    return (
+      <div className="flex h-full min-h-[320px] items-center justify-center">
+        <Spinner className="h-8 w-8" />
+      </div>
+    )
+  }
+
+  if (!user) {
+    return null
+  }
+
+  const userAttendances = attendances.filter((a) => a.user.id === user.id)
+  const userFCCProgress = fccProgressions.filter((p) => p.user.id === user.id)
 
   const passwordRequirements = [
     { test: passwordData.newPassword.length >= 8, label: "Au moins 8 caracteres" },
@@ -108,9 +163,55 @@ export default function ProfilePage() {
   const handleProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setProfileError("")
+    setProfileSuccess(false)
     setIsProfileLoading(true)
 
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    const firstName = profileData.firstName.trim()
+    const lastName = profileData.lastName.trim()
+    const pseudo = profileData.pseudo.trim()
+    const email = profileData.email.trim().toLowerCase()
+
+    if (!firstName || !lastName || !pseudo || !email) {
+      setProfileError("Tous les champs sont obligatoires.")
+      setIsProfileLoading(false)
+      return
+    }
+
+    const { error: profileUpdateError } = await supabase
+      .from("profiles")
+      .update({
+        first_name: firstName,
+        last_name: lastName,
+        pseudo,
+        english_level: profileData.englishLevel,
+      })
+      .eq("id", user.id)
+
+    if (profileUpdateError) {
+      setProfileError(mapProfileError(profileUpdateError.message, profileUpdateError.code))
+      setIsProfileLoading(false)
+      return
+    }
+
+    const wantsEmailChange = email !== user.email.toLowerCase()
+
+    const { error: authUpdateError } = await supabase.auth.updateUser({
+      ...(wantsEmailChange ? { email } : {}),
+      data: {
+        first_name: firstName,
+        last_name: lastName,
+        pseudo,
+        english_level: profileData.englishLevel,
+      },
+    })
+
+    if (authUpdateError) {
+      setProfileError(mapClientAuthError(authUpdateError.message))
+      setIsProfileLoading(false)
+      return
+    }
+
+    await refreshProfile()
 
     setProfileSuccess(true)
     setIsProfileLoading(false)
@@ -119,6 +220,7 @@ export default function ProfilePage() {
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setPasswordError("")
+    setPasswordSuccess(false)
 
     if (!isPasswordValid) {
       setPasswordError("Le nouveau mot de passe ne respecte pas les criteres requis.")
@@ -130,13 +232,20 @@ export default function ProfilePage() {
       return
     }
 
+    if (passwordData.currentPassword === passwordData.newPassword) {
+      setPasswordError("Le nouveau mot de passe doit etre different de l'ancien.")
+      return
+    }
+
     setIsPasswordLoading(true)
 
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    const { error: updatePasswordError } = await supabase.auth.updateUser({
+      password: passwordData.newPassword,
+      current_password: passwordData.currentPassword,
+    })
 
-    // Mock validation
-    if (passwordData.currentPassword !== "admin123" && passwordData.currentPassword !== "membre123") {
-      setPasswordError("Le mot de passe actuel est incorrect.")
+    if (updatePasswordError) {
+      setPasswordError(mapClientAuthError(updatePasswordError.message))
       setIsPasswordLoading(false)
       return
     }
@@ -162,10 +271,10 @@ export default function ProfilePage() {
           <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
             <div className="relative">
               <Avatar className="h-24 w-24">
-                <AvatarImage src={currentUser.photoUrl} alt={currentUser.firstName} />
+                <AvatarImage src={user.photoUrl} alt={user.firstName} />
                 <AvatarFallback className="text-2xl">
-                  {currentUser.firstName[0]}
-                  {currentUser.lastName[0]}
+                  {user.firstName[0]}
+                  {user.lastName[0]}
                 </AvatarFallback>
               </Avatar>
               <button className="absolute bottom-0 right-0 flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 transition-colors">
@@ -176,23 +285,23 @@ export default function ProfilePage() {
             <div className="flex-1 space-y-2">
               <div className="flex items-center gap-3">
                 <h2 className="text-xl font-semibold text-foreground">
-                  {currentUser.firstName} {currentUser.lastName}
+                  {user.firstName} {user.lastName}
                 </h2>
-                <Badge variant={currentUser.role === "admin" ? "default" : "secondary"}>
-                  {currentUser.role === "admin" ? "Administrateur" : "Membre"}
+                <Badge variant={user.role === "admin" ? "default" : "secondary"}>
+                  {user.role === "admin" ? "Administrateur" : "Membre"}
                 </Badge>
               </div>
-              <p className="text-muted-foreground">@{currentUser.pseudo}</p>
+              <p className="text-muted-foreground">@{user.pseudo}</p>
               <div className="flex flex-wrap items-center gap-4 text-sm">
                 <div className="flex items-center gap-1.5 text-muted-foreground">
                   <Mail className="h-4 w-4" />
-                  {currentUser.email}
+                  {user.email}
                 </div>
                 <div className="flex items-center gap-1.5 text-muted-foreground">
                   <Calendar className="h-4 w-4" />
                   Membre depuis{" "}
                   {member
-                    ? new Date(member.joinedAt).toLocaleDateString("fr-FR", {
+                    ? new Date(member.joined_at).toLocaleDateString("fr-FR", {
                         month: "long",
                         year: "numeric",
                       })
@@ -256,9 +365,9 @@ export default function ProfilePage() {
               </div>
               <div>
                 <p className="text-2xl font-bold text-foreground capitalize">
-                  {currentUser.englishLevel === "beginner"
+                  {user.englishLevel === "beginner"
                     ? "Debutant"
-                    : currentUser.englishLevel === "intermediate"
+                    : user.englishLevel === "intermediate"
                     ? "Inter."
                     : "Avance"}
                 </p>

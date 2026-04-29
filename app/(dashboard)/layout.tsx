@@ -17,7 +17,6 @@ import {
   Bell,
   Settings,
   Menu,
-  X,
   LogOut,
   ChevronDown,
 } from "lucide-react"
@@ -34,7 +33,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
-import { currentUser, notifications } from "@/lib/mock-data"
+import { useAuth } from "@/lib/auth-context"
+import { notifications } from "@/lib/mock-data"
+import { Spinner } from "@/components/ui/spinner"
 
 const navigation = [
   { name: "Tableau de bord", href: "/dashboard", icon: LayoutDashboard },
@@ -49,9 +50,16 @@ const navigation = [
   { name: "Paramètres", href: "/settings", icon: Settings },
 ]
 
-function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
+function Sidebar({
+  className,
+  onNavigate,
+  unreadNotifications,
+}: {
+  className?: string
+  onNavigate?: () => void
+  unreadNotifications: number
+}) {
   const pathname = usePathname()
-  const unreadNotifications = notifications.filter((n) => !n.isRead).length
 
   return (
     <div className={cn("flex h-full flex-col bg-sidebar text-sidebar-foreground", className)}>
@@ -65,7 +73,9 @@ function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: (
       <ScrollArea className="flex-1 px-3 py-4">
         <nav className="flex flex-col gap-1">
           {navigation.map((item) => {
-            const isActive = pathname === item.href
+            const isActive =
+              pathname === item.href ||
+              (item.href !== "/dashboard" && pathname?.startsWith(item.href))
             return (
               <Link
                 key={item.name}
@@ -112,18 +122,54 @@ function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: (
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const pathname = usePathname()
+  const { user, logout, isLoading, isAdmin } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <Spinner className="h-8 w-8" />
+      </div>
+    )
+  }
+
+  if (!user) {
+    return null
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background">
+        <p className="text-muted-foreground">Cet espace est reserve aux administrateurs.</p>
+        <Button asChild>
+          <Link href="/member">Aller a mon espace membre</Link>
+        </Button>
+      </div>
+    )
+  }
+
+  const unreadNotifications = notifications.filter((n) => !n.isRead).length
+  const currentPageLabel =
+    navigation.find(
+      (item) =>
+        pathname === item.href ||
+        (item.href !== "/dashboard" && pathname?.startsWith(item.href))
+    )?.name ?? "Espace Admin"
 
   return (
     <div className="flex h-screen bg-background">
       {/* Desktop Sidebar */}
       <aside className="hidden w-64 flex-shrink-0 lg:block">
-        <Sidebar />
+        <Sidebar unreadNotifications={unreadNotifications} />
       </aside>
 
       {/* Mobile Sidebar */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-64 p-0">
-          <Sidebar onNavigate={() => setMobileOpen(false)} />
+          <Sidebar
+            unreadNotifications={unreadNotifications}
+            onNavigate={() => setMobileOpen(false)}
+          />
         </SheetContent>
       </Sheet>
 
@@ -142,11 +188,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Sheet>
             <div className="hidden lg:block">
               <h1 className="text-lg font-semibold text-foreground">
-                Bienvenue, {currentUser.firstName}
+                Bienvenue, {user.firstName}
               </h1>
-              <p className="text-sm text-muted-foreground">
-                {currentUser.role === "admin" ? "Administrateur" : "Membre"}
-              </p>
+              <p className="text-sm text-muted-foreground">{currentPageLabel}</p>
             </div>
           </div>
 
@@ -154,7 +198,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Link href="/notifications">
               <Button variant="ghost" size="icon" className="relative">
                 <Bell className="h-5 w-5" />
-                {notifications.filter((n) => !n.isRead).length > 0 && (
+                {unreadNotifications > 0 && (
                   <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
                 )}
                 <span className="sr-only">Notifications</span>
@@ -165,22 +209,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="flex items-center gap-2 px-2">
                   <Avatar className="h-8 w-8">
-                    <AvatarImage src={currentUser.photoUrl} alt={currentUser.firstName} />
+                    <AvatarImage src={user.photoUrl} alt={user.firstName} />
                     <AvatarFallback>
-                      {currentUser.firstName[0]}
-                      {currentUser.lastName[0]}
+                      {user.firstName[0]}
+                      {user.lastName[0]}
                     </AvatarFallback>
                   </Avatar>
                   <span className="hidden text-sm font-medium md:block">
-                    {currentUser.firstName} {currentUser.lastName}
+                    {user.firstName} {user.lastName}
                   </span>
                   <ChevronDown className="h-4 w-4 text-muted-foreground" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <div className="px-2 py-1.5">
-                  <p className="text-sm font-medium">{currentUser.firstName} {currentUser.lastName}</p>
-                  <p className="text-xs text-muted-foreground">{currentUser.email}</p>
+                  <p className="text-sm font-medium">
+                    {user.firstName} {user.lastName}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{user.email}</p>
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
@@ -196,11 +242,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild className="text-destructive">
-                  <Link href="/login">
-                    <LogOut className="mr-2 h-4 w-4" />
-                    Deconnexion
-                  </Link>
+                <DropdownMenuItem onClick={logout} className="cursor-pointer text-destructive">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Deconnexion
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

@@ -1,69 +1,101 @@
 "use client"
 
-import { useState, Suspense } from "react"
+import { useMemo, useState, Suspense } from "react"
 import Link from "next/link"
-import { useRouter, useSearchParams } from "next/navigation"
-import { Eye, EyeOff, Lock, AlertCircle, Loader2, CheckCircle, CheckCircle2, ArrowLeft } from "lucide-react"
+import { useSearchParams } from "next/navigation"
+import {
+  Eye,
+  EyeOff,
+  Lock,
+  AlertCircle,
+  Loader2,
+  CheckCircle,
+  CheckCircle2,
+  ArrowLeft,
+} from "lucide-react"
+import { useForm } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import {
+  resetPasswordSchema,
+  type ResetPasswordInput,
+} from "@/lib/validations/auth"
 
 function ResetPasswordForm() {
-  const router = useRouter()
   const searchParams = useSearchParams()
-  const token = searchParams.get("token")
+  const code = searchParams.get("code")
+  const tokenHash = searchParams.get("token_hash")
+  const type = searchParams.get("type")
 
-  const [password, setPassword] = useState("")
-  const [confirmPassword, setConfirmPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
-  const [error, setError] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
+  const [apiError, setApiError] = useState("")
   const [isSuccess, setIsSuccess] = useState(false)
 
-  const passwordRequirements = [
-    { test: password.length >= 8, label: "Au moins 8 caracteres" },
-    { test: /[A-Z]/.test(password), label: "Une majuscule" },
-    { test: /[a-z]/.test(password), label: "Une minuscule" },
-    { test: /[0-9]/.test(password), label: "Un chiffre" },
-  ]
+  const hasToken = !!code || !!tokenHash
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors, isSubmitting },
+  } = useForm<ResetPasswordInput>({
+    resolver: zodResolver(resetPasswordSchema),
+    defaultValues: {
+      password: "",
+      confirmPassword: "",
+      code: code || undefined,
+      tokenHash: tokenHash || undefined,
+      type: type || undefined,
+    },
+  })
+
+  const password = watch("password")
+  const confirmPassword = watch("confirmPassword")
+
+  const passwordRequirements = useMemo(
+    () => [
+      { test: password.length >= 8, label: "Au moins 8 caracteres" },
+      { test: /[A-Z]/.test(password), label: "Une majuscule" },
+      { test: /[a-z]/.test(password), label: "Une minuscule" },
+      { test: /[0-9]/.test(password), label: "Un chiffre" },
+    ],
+    [password]
+  )
 
   const isPasswordValid = passwordRequirements.every((req) => req.test)
   const doPasswordsMatch = password === confirmPassword && confirmPassword !== ""
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
+  const onSubmit = async (data: ResetPasswordInput) => {
+    setApiError("")
 
-    if (!isPasswordValid) {
-      setError("Le mot de passe ne respecte pas les criteres requis.")
-      return
+    const response = await fetch("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...data,
+        code: code || data.code,
+        tokenHash: tokenHash || data.tokenHash,
+        type: type || data.type,
+      }),
+    })
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string
     }
 
-    if (!doPasswordsMatch) {
-      setError("Les mots de passe ne correspondent pas.")
-      return
-    }
-
-    setIsLoading(true)
-
-    // Simulate API call delay
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-
-    // Mock token validation
-    if (!token || token === "invalid") {
-      setError("Le lien de reinitialisation est invalide ou a expire.")
-      setIsLoading(false)
+    if (!response.ok) {
+      setApiError(payload.error || "Le lien de reinitialisation est invalide ou expire.")
       return
     }
 
     setIsSuccess(true)
-    setIsLoading(false)
   }
 
-  // Invalid or missing token
-  if (!token) {
+  if (!hasToken) {
     return (
       <div className="space-y-6">
         <div className="flex justify-center">
@@ -73,9 +105,7 @@ function ResetPasswordForm() {
         </div>
 
         <div className="space-y-2 text-center">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            Lien invalide
-          </h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Lien invalide</h1>
           <p className="text-muted-foreground">
             Ce lien de reinitialisation est invalide ou a expire. Veuillez demander un nouveau lien.
           </p>
@@ -88,7 +118,6 @@ function ResetPasswordForm() {
     )
   }
 
-  // Success state
   if (isSuccess) {
     return (
       <div className="space-y-6">
@@ -103,7 +132,7 @@ function ResetPasswordForm() {
             Mot de passe reinitialise
           </h1>
           <p className="text-muted-foreground">
-            Votre mot de passe a ete reinitialise avec succes. Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.
+            Votre mot de passe a ete reinitialise avec succes. Vous pouvez maintenant vous connecter.
           </p>
         </div>
 
@@ -125,19 +154,15 @@ function ResetPasswordForm() {
       </Link>
 
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-foreground">
-          Nouveau mot de passe
-        </h1>
-        <p className="text-muted-foreground">
-          Creez un nouveau mot de passe pour votre compte.
-        </p>
+        <h1 className="text-3xl font-bold tracking-tight text-foreground">Nouveau mot de passe</h1>
+        <p className="text-muted-foreground">Creez un nouveau mot de passe pour votre compte.</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-5">
-        {error && (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+        {apiError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>{apiError}</AlertDescription>
           </Alert>
         )}
 
@@ -149,10 +174,8 @@ function ResetPasswordForm() {
               id="password"
               type={showPassword ? "text" : "password"}
               placeholder="Votre nouveau mot de passe"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
               className="pl-10 pr-10"
-              required
+              {...register("password")}
             />
             <button
               type="button"
@@ -162,6 +185,9 @@ function ResetPasswordForm() {
               {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          {errors.password && (
+            <p className="text-sm text-destructive">{errors.password.message}</p>
+          )}
           {password && (
             <div className="grid grid-cols-2 gap-2 mt-2">
               {passwordRequirements.map((req, index) => (
@@ -171,7 +197,11 @@ function ResetPasswordForm() {
                     req.test ? "text-green-600" : "text-muted-foreground"
                   }`}
                 >
-                  <CheckCircle2 className={`h-3 w-3 ${req.test ? "text-green-600" : "text-muted-foreground/50"}`} />
+                  <CheckCircle2
+                    className={`h-3 w-3 ${
+                      req.test ? "text-green-600" : "text-muted-foreground/50"
+                    }`}
+                  />
                   {req.label}
                 </div>
               ))}
@@ -187,10 +217,8 @@ function ResetPasswordForm() {
               id="confirmPassword"
               type={showConfirmPassword ? "text" : "password"}
               placeholder="Confirmez votre mot de passe"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
               className="pl-10 pr-10"
-              required
+              {...register("confirmPassword")}
             />
             <button
               type="button"
@@ -200,9 +228,14 @@ function ResetPasswordForm() {
               {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          {confirmPassword && (
+          {errors.confirmPassword && (
+            <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
+          )}
+          {confirmPassword && !errors.confirmPassword && (
             <p className={`text-xs ${doPasswordsMatch ? "text-green-600" : "text-destructive"}`}>
-              {doPasswordsMatch ? "Les mots de passe correspondent" : "Les mots de passe ne correspondent pas"}
+              {doPasswordsMatch
+                ? "Les mots de passe correspondent"
+                : "Les mots de passe ne correspondent pas"}
             </p>
           )}
         </div>
@@ -211,9 +244,9 @@ function ResetPasswordForm() {
           type="submit"
           className="w-full"
           size="lg"
-          disabled={isLoading || !isPasswordValid || !doPasswordsMatch}
+          disabled={isSubmitting || !isPasswordValid || !doPasswordsMatch}
         >
-          {isLoading ? (
+          {isSubmitting ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Reinitialisation en cours...
@@ -229,7 +262,13 @@ function ResetPasswordForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={<div className="flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin" /></div>}>
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin" />
+        </div>
+      }
+    >
       <ResetPasswordForm />
     </Suspense>
   )

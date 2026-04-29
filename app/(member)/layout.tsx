@@ -106,6 +106,7 @@ function MemberSidebar({ className, onNavigate }: { className?: string; onNaviga
 
 export default function MemberLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const pathname = usePathname()
   const { user, logout, isLoading, isAdmin } = useAuth()
 
   // Show loading state
@@ -133,7 +134,15 @@ export default function MemberLayout({ children }: { children: React.ReactNode }
     return null // Will redirect via auth context
   }
 
-  const userNotifications = notifications.filter((n) => !n.isRead)
+  const userNotifications = notifications.filter(
+    (n) => n.userId === user.id && !n.isRead
+  )
+  const currentPageLabel =
+    memberNavigation.find(
+      (item) =>
+        pathname === item.href ||
+        (item.href !== "/member" && pathname?.startsWith(item.href))
+    )?.name ?? "Espace Membre"
 
   return (
     <div className="flex h-screen bg-background">
@@ -166,7 +175,7 @@ export default function MemberLayout({ children }: { children: React.ReactNode }
               <h1 className="text-lg font-semibold text-foreground">
                 Bienvenue, {user.firstName}
               </h1>
-              <p className="text-sm text-muted-foreground">Espace Membre</p>
+              <p className="text-sm text-muted-foreground">{currentPageLabel}</p>
             </div>
           </div>
 

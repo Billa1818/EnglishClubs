@@ -3,6 +3,8 @@
 import { useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { useForm } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
 import { Eye, EyeOff, Mail, Lock, AlertCircle, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,40 +12,39 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useAuth } from "@/lib/auth-context"
-import { authUsers } from "@/lib/mock-data"
+import { loginSchema, type LoginInput } from "@/lib/validations/auth"
 
 export default function LoginPage() {
   const router = useRouter()
   const { login } = useAuth()
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
-  const [error, setError] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
+  const [apiError, setApiError] = useState("")
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
-    setIsLoading(true)
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginInput>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: {
+      email: "",
+      password: "",
+    },
+  })
 
-    const result = await login(email, password)
+  const onSubmit = async (data: LoginInput) => {
+    setApiError("")
 
-    if (result.success) {
-      // Find the user to check their role
-      const user = authUsers.find(
-        (u) => u.email.toLowerCase() === email.toLowerCase()
-      )
-      // Redirect based on role
-      if (user?.role === "admin") {
-        router.push("/dashboard")
-      } else {
-        router.push("/member")
-      }
-    } else {
-      setError(result.error || "Une erreur est survenue.")
-      setIsLoading(false)
+    const result = await login(data.email, data.password)
+
+    if (!result.success) {
+      setApiError(result.error || "Une erreur est survenue.")
+      return
     }
+
+    router.push(result.redirectTo || "/pending")
+    router.refresh()
   }
 
   return (
@@ -55,21 +56,11 @@ export default function LoginPage() {
         </p>
       </div>
 
-      {/* Demo credentials */}
-      <Alert className="bg-muted/50 border-muted">
-        <AlertCircle className="h-4 w-4" />
-        <AlertDescription className="text-sm">
-          <strong>Compte Admin:</strong> admin@englishclubs.com / admin123
-          <br />
-          <strong>Compte Membre:</strong> marie.martin@email.com / membre123
-        </AlertDescription>
-      </Alert>
-
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {error && (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        {apiError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>{apiError}</AlertDescription>
           </Alert>
         )}
 
@@ -82,12 +73,13 @@ export default function LoginPage() {
                 id="email"
                 type="email"
                 placeholder="vous@exemple.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
                 className="pl-10"
-                required
+                {...register("email")}
               />
             </div>
+            {errors.email && (
+              <p className="text-sm text-destructive">{errors.email.message}</p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -106,10 +98,8 @@ export default function LoginPage() {
                 id="password"
                 type={showPassword ? "text" : "password"}
                 placeholder="Votre mot de passe"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
                 className="pl-10 pr-10"
-                required
+                {...register("password")}
               />
               <button
                 type="button"
@@ -123,6 +113,9 @@ export default function LoginPage() {
                 )}
               </button>
             </div>
+            {errors.password && (
+              <p className="text-sm text-destructive">{errors.password.message}</p>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
@@ -137,8 +130,8 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
-          {isLoading ? (
+        <Button type="submit" className="w-full" size="lg" disabled={isSubmitting}>
+          {isSubmitting ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Connexion en cours...

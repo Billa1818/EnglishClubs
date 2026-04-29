@@ -2,36 +2,58 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { useForm } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
 import { Mail, AlertCircle, Loader2, ArrowLeft, CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { authUsers } from "@/lib/mock-data"
+import {
+  forgotPasswordSchema,
+  type ForgotPasswordInput,
+} from "@/lib/validations/auth"
 
 export default function ForgotPasswordPage() {
-  const [email, setEmail] = useState("")
-  const [error, setError] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
-  const [isSuccess, setIsSuccess] = useState(false)
+  const [apiError, setApiError] = useState("")
+  const [successEmail, setSuccessEmail] = useState("")
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
-    setIsLoading(true)
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors, isSubmitting },
+  } = useForm<ForgotPasswordInput>({
+    resolver: zodResolver(forgotPasswordSchema),
+    defaultValues: {
+      email: "",
+    },
+  })
 
-    // Simulate API call delay
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+  const email = watch("email")
 
-    // Check if email exists (mock validation)
-    const userExists = authUsers.some((u) => u.email.toLowerCase() === email.toLowerCase())
+  const onSubmit = async (data: ForgotPasswordInput) => {
+    setApiError("")
 
-    // We always show success message for security (don't reveal if email exists)
-    setIsSuccess(true)
-    setIsLoading(false)
+    const response = await fetch("/api/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    })
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string
+    }
+
+    if (!response.ok) {
+      setApiError(payload.error || "Impossible d'envoyer le lien pour le moment.")
+      return
+    }
+
+    setSuccessEmail(data.email)
   }
 
-  if (isSuccess) {
+  if (successEmail) {
     return (
       <div className="space-y-6">
         <div className="flex justify-center">
@@ -45,7 +67,7 @@ export default function ForgotPasswordPage() {
             Verifiez votre email
           </h1>
           <p className="text-muted-foreground">
-            Si un compte existe avec l&apos;adresse <strong className="text-foreground">{email}</strong>,
+            Si un compte existe avec l'adresse <strong className="text-foreground">{successEmail}</strong>,
             vous recevrez un lien pour reinitialiser votre mot de passe.
           </p>
         </div>
@@ -59,9 +81,9 @@ export default function ForgotPasswordPage() {
           </Button>
 
           <p className="text-center text-sm text-muted-foreground">
-            Vous n&apos;avez pas recu l&apos;email?{" "}
+            Vous n'avez pas recu l'email?{" "}
             <button
-              onClick={() => setIsSuccess(false)}
+              onClick={() => setSuccessEmail("")}
               className="text-primary font-medium hover:underline"
             >
               Renvoyer
@@ -91,11 +113,11 @@ export default function ForgotPasswordPage() {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {error && (
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        {apiError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription>{apiError}</AlertDescription>
           </Alert>
         )}
 
@@ -107,16 +129,17 @@ export default function ForgotPasswordPage() {
               id="email"
               type="email"
               placeholder="vous@exemple.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
               className="pl-10"
-              required
+              {...register("email")}
             />
           </div>
+          {errors.email && (
+            <p className="text-sm text-destructive">{errors.email.message}</p>
+          )}
         </div>
 
-        <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
-          {isLoading ? (
+        <Button type="submit" className="w-full" size="lg" disabled={isSubmitting}>
+          {isSubmitting ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Envoi en cours...
