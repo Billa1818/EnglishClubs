@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
@@ -19,6 +19,7 @@ import {
   Menu,
   LogOut,
   ChevronDown,
+  ArrowRightLeft,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -34,7 +35,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { useAuth } from "@/lib/auth-context"
-import { notifications } from "@/lib/mock-data"
 import { Spinner } from "@/components/ui/spinner"
 
 const navigation = [
@@ -122,8 +122,62 @@ function Sidebar({
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
   const pathname = usePathname()
   const { user, logout, isLoading, isAdmin } = useAuth()
+
+  const refreshUnreadNotifications = useCallback(async () => {
+    if (!user?.id) {
+      setUnreadNotifications(0)
+      return
+    }
+
+    try {
+      const response = await fetch("/api/notifications?unreadOnly=true&page=1&limit=1")
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean
+        pagination?: {
+          total?: number
+        }
+        stats?: {
+          unreadCount?: number
+        }
+      }
+
+      if (!response.ok || !payload.success) {
+        setUnreadNotifications(0)
+        return
+      }
+
+      setUnreadNotifications(
+        payload.pagination?.total ?? payload.stats?.unreadCount ?? 0
+      )
+    } catch {
+      setUnreadNotifications(0)
+    }
+  }, [user?.id])
+
+  useEffect(() => {
+    void refreshUnreadNotifications()
+  }, [refreshUnreadNotifications, pathname])
+
+  useEffect(() => {
+    const handleNotificationsChanged = () => {
+      void refreshUnreadNotifications()
+    }
+
+    window.addEventListener(
+      "notifications:changed",
+      handleNotificationsChanged as EventListener
+    )
+
+    return () => {
+      window.removeEventListener(
+        "notifications:changed",
+        handleNotificationsChanged as EventListener
+      )
+    }
+  }, [refreshUnreadNotifications])
 
   if (isLoading) {
     return (
@@ -148,7 +202,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     )
   }
 
-  const unreadNotifications = notifications.filter((n) => !n.isRead).length
   const currentPageLabel =
     navigation.find(
       (item) =>
@@ -195,6 +248,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div className="flex items-center gap-3">
+            {isAdmin ? (
+              <Button variant="outline" size="sm" asChild className="hidden md:inline-flex">
+                <Link href="/member">
+                  <ArrowRightLeft className="mr-2 h-4 w-4" />
+                  Espace membre
+                </Link>
+              </Button>
+            ) : null}
+
             <Link href="/notifications">
               <Button variant="ghost" size="icon" className="relative">
                 <Bell className="h-5 w-5" />

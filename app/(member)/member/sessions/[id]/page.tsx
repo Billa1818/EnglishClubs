@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { useParams, useRouter } from "next/navigation"
+import { useParams } from "next/navigation"
 import {
   Calendar,
   Clock,
@@ -12,11 +12,8 @@ import {
   AlertCircle,
   ArrowLeft,
   BookOpen,
-  User,
-  MapPin,
   PlayCircle,
   Radio,
-  Pause,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -34,29 +31,282 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Spinner } from "@/components/ui/spinner"
 import { useAuth } from "@/lib/auth-context"
-import { sessions, attendances, users } from "@/lib/mock-data"
+
+type SessionDetailRow = {
+  id: string
+  date: string
+  start_time: string
+  end_time: string
+  status: "upcoming" | "ongoing" | "completed" | "cancelled"
+  started_at: string | null
+  topic: {
+    id: string
+    title: string
+    description: string
+    level: "beginner" | "intermediate" | "advanced"
+  } | null
+  session_activities: Array<{
+    id: string
+    order_index: number
+    duration: number
+    status: "pending" | "in_progress" | "completed" | "skipped"
+    activity: {
+      id: string
+      name: string
+      description: string
+      requires_topic: boolean
+    } | null
+    assignments: Array<{
+      id: string
+      user_id: string
+      assignment_type: string
+      user: {
+        id: string
+        first_name: string
+        last_name: string
+        photo_url: string | null
+      } | null
+    }> | null
+  }> | null
+}
+
+type AttendanceRow = {
+  id: string
+  user_id: string
+  status: "declared" | "confirmed" | "absent" | "excused"
+  user: {
+    id: string
+    first_name: string
+    last_name: string
+    pseudo: string
+    photo_url: string | null
+  } | null
+}
+
+function parseApiError(payload: unknown, fallback: string) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "error" in payload &&
+    typeof payload.error === "string"
+  ) {
+    return payload.error
+  }
+  return fallback
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, { cache: "no-store" })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(parseApiError(payload, `Echec de chargement: ${url}`))
+  }
+  return payload as T
+}
+
+function getStatusBadge(status: string | null) {
+  switch (status) {
+    case "declared":
+      return (
+        <Badge variant="outline" className="border-blue-500/20 bg-blue-500/10 text-blue-600">
+          <CheckCircle2 className="mr-1 h-3 w-3" />
+          Inscrit
+        </Badge>
+      )
+    case "confirmed":
+      return (
+        <Badge className="bg-green-500 text-white">
+          <CheckCircle2 className="mr-1 h-3 w-3" />
+          Present
+        </Badge>
+      )
+    case "absent":
+      return (
+        <Badge variant="destructive">
+          <XCircle className="mr-1 h-3 w-3" />
+          Absent
+        </Badge>
+      )
+    case "excused":
+      return (
+        <Badge variant="secondary">
+          <AlertCircle className="mr-1 h-3 w-3" />
+          Excuse
+        </Badge>
+      )
+    default:
+      return null
+  }
+}
+
+function getSessionStatusBadge(status: SessionDetailRow["status"]) {
+  if (status === "upcoming") {
+    return <Badge className="bg-blue-500">A venir</Badge>
+  }
+  if (status === "ongoing") {
+    return <Badge className="bg-green-500">En cours</Badge>
+  }
+  if (status === "completed") {
+    return <Badge variant="secondary">Terminee</Badge>
+  }
+  return <Badge variant="destructive">Annulee</Badge>
+}
+
+function getAssignmentLabel(value: string) {
+  if (value === "presenter") {
+    return "Presentateur"
+  }
+  if (value === "host") {
+    return "Animateur"
+  }
+  if (value === "team_a") {
+    return "Equipe A"
+  }
+  if (value === "team_b") {
+    return "Equipe B"
+  }
+  return "Participant"
+}
 
 export default function MemberSessionDetailPage() {
   const params = useParams()
-  const router = useRouter()
-  const { user } = useAuth()
-  const [hasDeclared, setHasDeclared] = useState(false)
-
-  if (!user) return null
+  const { user, isLoading } = useAuth()
+  const [session, setSession] = useState<SessionDetailRow | null>(null)
+  const [attendances, setAttendances] = useState<AttendanceRow[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [isPageLoading, setIsPageLoading] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const sessionId = params.id as string
-  const session = sessions.find(s => s.id === sessionId)
 
-  if (!session) {
+  useEffect(() => {
+    if (!sessionId) {
+      return
+    }
+
+    let isMounted = true
+
+    const loadData = async () => {
+      setIsPageLoading(true)
+      setError(null)
+
+      try {
+        const [sessionResponse, attendancesResponse] = await Promise.all([
+          fetchJson<{ data: SessionDetailRow }>(`/api/sessions/${sessionId}`),
+          fetchJson<{ data: AttendanceRow[] }>(
+            `/api/sessions/${sessionId}/attendances?limit=100&page=1`
+          ),
+        ])
+
+        if (!isMounted) {
+          return
+        }
+
+        setSession(sessionResponse.data)
+        setAttendances(attendancesResponse.data ?? [])
+      } catch (caughtError) {
+        if (!isMounted) {
+          return
+        }
+
+        setError(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Impossible de charger la seance."
+        )
+      } finally {
+        if (isMounted) {
+          setIsPageLoading(false)
+        }
+      }
+    }
+
+    void loadData()
+
+    return () => {
+      isMounted = false
+    }
+  }, [sessionId])
+
+  const refreshAttendances = async () => {
+    const attendancesResponse = await fetchJson<{ data: AttendanceRow[] }>(
+      `/api/sessions/${sessionId}/attendances?limit=100&page=1`
+    )
+    setAttendances(attendancesResponse.data ?? [])
+  }
+
+  const handleDeclarePresence = async () => {
+    setIsSubmitting(true)
+    setError(null)
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/attendances`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "declared" }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(parseApiError(payload, "Impossible de declarer votre presence."))
+      }
+      await refreshAttendances()
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Impossible de declarer votre presence."
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleCancelDeclaration = async () => {
+    setIsSubmitting(true)
+    setError(null)
+
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/attendances`, {
+        method: "DELETE",
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        throw new Error(parseApiError(payload, "Impossible d'annuler la declaration."))
+      }
+      await refreshAttendances()
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Impossible d'annuler la declaration."
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  if (isLoading || isPageLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-12">
-        <Calendar className="h-12 w-12 text-muted-foreground/30" />
-        <h2 className="mt-4 text-xl font-semibold">Seance non trouvee</h2>
-        <p className="mt-2 text-muted-foreground">
-          Cette seance n&apos;existe pas ou a ete supprimee.
-        </p>
-        <Button className="mt-4" asChild>
+      <div className="flex min-h-[320px] items-center justify-center">
+        <Spinner className="h-8 w-8" />
+      </div>
+    )
+  }
+
+  if (!user) {
+    return null
+  }
+
+  if (error && !session) {
+    return (
+      <div className="space-y-6">
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+        <Button asChild variant="outline">
           <Link href="/member/sessions">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Retour aux seances
@@ -66,87 +316,37 @@ export default function MemberSessionDetailPage() {
     )
   }
 
-  const sessionAttendances = attendances.filter(a => a.sessionId === session.id)
-  const userAttendance = sessionAttendances.find(a => a.user.id === user.id)
-  const declaredCount = sessionAttendances.filter(a => 
-    a.status === "declared" || a.status === "confirmed"
-  ).length
+  if (!session) {
+    return null
+  }
 
+  const userAttendance =
+    attendances.find((attendance) => attendance.user_id === user.id) ?? null
+  const declaredCount = attendances.filter(
+    (attendance) => attendance.status === "declared" || attendance.status === "confirmed"
+  ).length
   const isUpcoming = session.status === "upcoming"
   const isOngoing = session.status === "ongoing"
   const isPast = session.status === "completed" || session.status === "cancelled"
 
-  const currentUserStatus = hasDeclared ? "declared" : userAttendance?.status || null
+  const userAssignments = (session.session_activities ?? [])
+    .flatMap((sessionActivity) =>
+      (sessionActivity.assignments ?? [])
+        .filter((assignment) => assignment.user_id === user.id)
+        .map((assignment) => ({
+          activityName: sessionActivity.activity?.name ?? "Activite",
+          assignmentType: assignment.assignment_type,
+        }))
+    )
 
-  const handleDeclarePresence = () => {
-    setHasDeclared(true)
-  }
+  const sortedActivities = [...(session.session_activities ?? [])].sort(
+    (left, right) => left.order_index - right.order_index
+  )
 
-  const handleCancelDeclaration = () => {
-    setHasDeclared(false)
-  }
-
-  const getStatusBadge = (status: string | null) => {
-    switch (status) {
-      case "declared":
-        return (
-          <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/20">
-            <CheckCircle2 className="mr-1 h-3 w-3" />
-            Inscrit
-          </Badge>
-        )
-      case "confirmed":
-        return (
-          <Badge className="bg-green-500 text-white">
-            <CheckCircle2 className="mr-1 h-3 w-3" />
-            Present
-          </Badge>
-        )
-      case "absent":
-        return (
-          <Badge variant="destructive">
-            <XCircle className="mr-1 h-3 w-3" />
-            Absent
-          </Badge>
-        )
-      case "excused":
-        return (
-          <Badge variant="secondary">
-            <AlertCircle className="mr-1 h-3 w-3" />
-            Excuse
-          </Badge>
-        )
-      default:
-        return null
-    }
-  }
-
-  const getSessionStatusBadge = () => {
-    switch (session.status) {
-      case "upcoming":
-        return <Badge className="bg-blue-500">A venir</Badge>
-      case "ongoing":
-        return <Badge className="bg-green-500">En cours</Badge>
-      case "completed":
-        return <Badge variant="secondary">Terminee</Badge>
-      case "cancelled":
-        return <Badge variant="destructive">Annulee</Badge>
-      default:
-        return null
-    }
-  }
-
-  // Find user's assignments in this session
-  const userAssignments = session.activities?.flatMap(sa => 
-    sa.assignments?.filter(a => a.user.id === user.id).map(a => ({
-      activityName: sa.activity.name,
-      assignmentType: a.assignmentType,
-    })) || []
-  ) || []
+  const currentActivity = sortedActivities.find((activity) => activity.status === "in_progress")
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="icon" asChild>
           <Link href="/member/sessions">
@@ -156,63 +356,86 @@ export default function MemberSessionDetailPage() {
         <div className="flex-1">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight">
-              Seance du {new Date(session.date).toLocaleDateString("fr-FR", {
+              Seance du{" "}
+              {new Date(session.date).toLocaleDateString("fr-FR", {
                 weekday: "long",
                 day: "numeric",
                 month: "long",
               })}
             </h1>
-            {getSessionStatusBadge()}
+            {getSessionStatusBadge(session.status)}
           </div>
           <p className="text-muted-foreground">
-            {session.startTime} - {session.endTime}
+            {session.start_time.slice(0, 5)} - {session.end_time.slice(0, 5)}
           </p>
         </div>
       </div>
 
-      {/* Live Session Banner */}
-      {isOngoing && (
+      {error ? (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {isOngoing ? (
         <Card className="border-2 border-green-500 bg-green-50 dark:bg-green-950/20">
           <CardContent className="py-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
               <div className="flex items-center gap-3">
                 <div className="relative">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500">
                     <Radio className="h-5 w-5 text-white" />
                   </div>
                   <span className="absolute -right-0.5 -top-0.5 flex h-3 w-3">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
-                    <span className="relative inline-flex h-3 w-3 rounded-full bg-green-500"></span>
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                    <span className="relative inline-flex h-3 w-3 rounded-full bg-green-500" />
                   </span>
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <p className="font-semibold text-green-700 dark:text-green-400">Seance en cours</p>
+                    <p className="font-semibold text-green-700 dark:text-green-400">
+                      Seance en cours
+                    </p>
                     <Badge className="bg-green-500 text-white animate-pulse">LIVE</Badge>
                   </div>
                   <p className="text-sm text-green-600 dark:text-green-400">
-                    {session.activities?.find(a => a.status === "in_progress")
-                      ? `Activite en cours: ${session.activities.find(a => a.status === "in_progress")?.activity.name}`
+                    {currentActivity
+                      ? `Activite en cours: ${currentActivity.activity?.name ?? "Activite"}`
                       : "La seance a demarre"}
                   </p>
                 </div>
               </div>
-              {session.startedAt && (
+              {session.started_at ? (
                 <div className="text-sm text-green-600 dark:text-green-400">
-                  <Clock className="inline h-4 w-4 mr-1" />
-                  Demarree depuis {Math.round((Date.now() - new Date(session.startedAt).getTime()) / 60000)} min
+                  <Clock className="mr-1 inline h-4 w-4" />
+                  Demarree depuis{" "}
+                  {Math.round((Date.now() - new Date(session.started_at).getTime()) / 60000)} min
                 </div>
-              )}
+              ) : null}
             </div>
           </CardContent>
         </Card>
-      )}
+      ) : null}
+
+      {session.topic ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Sujet de la seance</CardTitle>
+            <CardDescription>Theme principal de cette rencontre</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{session.topic.level}</Badge>
+            </div>
+            <p className="font-medium text-foreground">{session.topic.title}</p>
+            <p className="text-sm text-muted-foreground">{session.topic.description}</p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Main Content */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* My Status Card */}
-          <Card className={currentUserStatus ? "border-primary/50" : ""}>
+        <div className="space-y-6 lg:col-span-2">
+          <Card className={userAttendance ? "border-primary/50" : ""}>
             <CardHeader>
               <CardTitle>Mon statut</CardTitle>
               <CardDescription>
@@ -220,31 +443,34 @@ export default function MemberSessionDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                 <div className="flex items-center gap-4">
                   <Avatar className="h-12 w-12">
                     <AvatarImage src={user.photoUrl} alt={user.firstName} />
                     <AvatarFallback>
-                      {user.firstName[0]}{user.lastName[0]}
+                      {user.firstName[0]}
+                      {user.lastName[0]}
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="font-medium">{user.firstName} {user.lastName}</p>
+                    <p className="font-medium">
+                      {user.firstName} {user.lastName}
+                    </p>
                     <p className="text-sm text-muted-foreground">@{user.pseudo}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {currentUserStatus && getStatusBadge(currentUserStatus)}
-                  {(isUpcoming || isOngoing) && !currentUserStatus && (
-                    <Button onClick={handleDeclarePresence}>
+                  {userAttendance ? getStatusBadge(userAttendance.status) : null}
+                  {(isUpcoming || isOngoing) && !userAttendance ? (
+                    <Button onClick={() => void handleDeclarePresence()} disabled={isSubmitting}>
                       <CheckCircle2 className="mr-2 h-4 w-4" />
                       Declarer ma presence
                     </Button>
-                  )}
-                  {(isUpcoming || isOngoing) && currentUserStatus === "declared" && !userAttendance && (
+                  ) : null}
+                  {(isUpcoming || isOngoing) && userAttendance?.status === "declared" ? (
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button variant="outline">
+                        <Button variant="outline" disabled={isSubmitting}>
                           <XCircle className="mr-2 h-4 w-4" />
                           Annuler
                         </Button>
@@ -258,39 +484,32 @@ export default function MemberSessionDetailPage() {
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Non, garder</AlertDialogCancel>
-                          <AlertDialogAction onClick={handleCancelDeclaration}>
+                          <AlertDialogAction onClick={() => void handleCancelDeclaration()}>
                             Oui, annuler
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
-              {/* User Assignments */}
-              {userAssignments.length > 0 && (
+              {userAssignments.length > 0 ? (
                 <>
                   <Separator className="my-4" />
                   <div>
-                    <p className="text-sm font-medium mb-3">Mes activites assignees</p>
+                    <p className="mb-3 text-sm font-medium">Mes activites assignees</p>
                     <div className="space-y-2">
                       {userAssignments.map((assignment, index) => (
-                        <div 
-                          key={index}
-                          className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/20"
+                        <div
+                          key={`${assignment.activityName}-${index}`}
+                          className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3"
                         >
                           <BookOpen className="h-5 w-5 text-primary" />
                           <div>
                             <p className="font-medium">{assignment.activityName}</p>
                             <p className="text-sm text-muted-foreground">
-                              Role: {
-                                assignment.assignmentType === "presenter" ? "Presentateur" :
-                                assignment.assignmentType === "host" ? "Animateur" :
-                                assignment.assignmentType === "team_a" ? "Equipe A" :
-                                assignment.assignmentType === "team_b" ? "Equipe B" : 
-                                "Participant"
-                              }
+                              Role: {getAssignmentLabel(assignment.assignmentType)}
                             </p>
                           </div>
                         </div>
@@ -298,111 +517,112 @@ export default function MemberSessionDetailPage() {
                     </div>
                   </div>
                 </>
-              )}
+              ) : null}
             </CardContent>
           </Card>
 
-          {/* Activities */}
           <Card>
             <CardHeader>
               <CardTitle>Programme</CardTitle>
-              <CardDescription>
-                Activites prevues pour cette seance
-              </CardDescription>
+              <CardDescription>Activites prevues pour cette seance</CardDescription>
             </CardHeader>
             <CardContent>
-              {session.activities && session.activities.length > 0 ? (
+              {sortedActivities.length > 0 ? (
                 <div className="space-y-4">
-                  {session.activities
-                    .sort((a, b) => a.orderIndex - b.orderIndex)
-                    .map((sa, index) => (
-                    <div 
-                      key={sa.id}
-                      className={`flex items-start gap-4 p-4 rounded-lg border ${
-                        sa.status === "in_progress" 
-                          ? "border-2 border-green-500 bg-green-50 dark:bg-green-950/20" 
-                          : sa.status === "completed"
-                          ? "border-muted bg-muted/30"
-                          : ""
+                  {sortedActivities.map((sessionActivity, index) => (
+                    <div
+                      key={sessionActivity.id}
+                      className={`flex items-start gap-4 rounded-lg border p-4 ${
+                        sessionActivity.status === "in_progress"
+                          ? "border-2 border-green-500 bg-green-50 dark:bg-green-950/20"
+                          : sessionActivity.status === "completed"
+                            ? "border-muted bg-muted/30"
+                            : ""
                       }`}
                     >
-                      <div className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
-                        sa.status === "in_progress" 
-                          ? "bg-green-500 text-white" 
-                          : sa.status === "completed"
-                          ? "bg-muted-foreground/20 text-muted-foreground"
-                          : "bg-muted"
-                      }`}>
-                        {sa.status === "in_progress" ? (
+                      <div
+                        className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium ${
+                          sessionActivity.status === "in_progress"
+                            ? "bg-green-500 text-white"
+                            : sessionActivity.status === "completed"
+                              ? "bg-muted-foreground/20 text-muted-foreground"
+                              : "bg-muted"
+                        }`}
+                      >
+                        {sessionActivity.status === "in_progress" ? (
                           <PlayCircle className="h-4 w-4" />
-                        ) : sa.status === "completed" ? (
+                        ) : sessionActivity.status === "completed" ? (
                           <CheckCircle2 className="h-4 w-4" />
                         ) : (
                           index + 1
                         )}
                       </div>
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h4 className={`font-medium ${sa.status === "completed" ? "text-muted-foreground" : ""}`}>
-                            {sa.activity.name}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h4
+                            className={`font-medium ${
+                              sessionActivity.status === "completed"
+                                ? "text-muted-foreground"
+                                : ""
+                            }`}
+                          >
+                            {sessionActivity.activity?.name ?? "Activite"}
                           </h4>
-                          {sa.status === "in_progress" && (
+                          {sessionActivity.status === "in_progress" ? (
                             <Badge className="bg-green-500 text-white animate-pulse">
                               En cours
                             </Badge>
-                          )}
-                          {sa.status === "completed" && (
-                            <Badge variant="secondary">
-                              Termine
-                            </Badge>
-                          )}
-                          {sa.activity.requiresTopic && (
+                          ) : null}
+                          {sessionActivity.status === "completed" ? (
+                            <Badge variant="secondary">Termine</Badge>
+                          ) : null}
+                          {sessionActivity.activity?.requires_topic ? (
                             <Badge variant="outline" className="text-xs">
                               Sujet requis
                             </Badge>
-                          )}
+                          ) : null}
                         </div>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {sa.activity.description}
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {sessionActivity.activity?.description ?? "Aucune description"}
                         </p>
-                        {sa.assignments && sa.assignments.length > 0 && (
+                        {(sessionActivity.assignments ?? []).length > 0 ? (
                           <div className="mt-3">
-                            <p className="text-xs font-medium text-muted-foreground mb-2">
+                            <p className="mb-2 text-xs font-medium text-muted-foreground">
                               Responsables:
                             </p>
                             <div className="flex flex-wrap gap-2">
-                              {sa.assignments.map((assignment) => (
-                                <div 
+                              {(sessionActivity.assignments ?? []).map((assignment) => (
+                                <div
                                   key={assignment.id}
-                                  className={`flex items-center gap-2 px-2 py-1 rounded-full text-xs ${
-                                    assignment.user.id === user.id 
-                                      ? "bg-primary/10 text-primary border border-primary/20" 
+                                  className={`flex items-center gap-2 rounded-full px-2 py-1 text-xs ${
+                                    assignment.user?.id === user.id
+                                      ? "border border-primary/20 bg-primary/10 text-primary"
                                       : "bg-muted"
                                   }`}
                                 >
                                   <Avatar className="h-5 w-5">
-                                    <AvatarImage src={assignment.user.photoUrl} />
+                                    <AvatarImage src={assignment.user?.photo_url ?? undefined} />
                                     <AvatarFallback className="text-[10px]">
-                                      {assignment.user.firstName[0]}
+                                      {assignment.user?.first_name?.[0] ?? "?"}
                                     </AvatarFallback>
                                   </Avatar>
-                                  <span>{assignment.user.firstName}</span>
-                                  {assignment.user.id === user.id && (
+                                  <span>{assignment.user?.first_name ?? "Membre"}</span>
+                                  {assignment.user?.id === user.id ? (
                                     <Badge variant="secondary" className="h-4 text-[10px]">
                                       Vous
                                     </Badge>
-                                  )}
+                                  ) : null}
                                 </div>
                               ))}
                             </div>
                           </div>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-8">
+                <div className="py-8 text-center">
                   <BookOpen className="mx-auto h-12 w-12 text-muted-foreground/30" />
                   <p className="mt-4 text-muted-foreground">
                     Aucune activite planifiee pour le moment.
@@ -413,9 +633,7 @@ export default function MemberSessionDetailPage() {
           </Card>
         </div>
 
-        {/* Sidebar */}
         <div className="space-y-6">
-          {/* Session Info */}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Informations</CardTitle>
@@ -440,7 +658,7 @@ export default function MemberSessionDetailPage() {
                 <div>
                   <p className="text-sm font-medium">Horaires</p>
                   <p className="text-sm text-muted-foreground">
-                    {session.startTime} - {session.endTime}
+                    {session.start_time.slice(0, 5)} - {session.end_time.slice(0, 5)}
                   </p>
                 </div>
               </div>
@@ -456,7 +674,6 @@ export default function MemberSessionDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Attendees */}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Participants</CardTitle>
@@ -465,30 +682,30 @@ export default function MemberSessionDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {sessionAttendances.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">
+              {attendances.length === 0 ? (
+                <p className="py-4 text-center text-sm text-muted-foreground">
                   Aucun participant pour le moment
                 </p>
               ) : (
                 <div className="space-y-3">
-                  {sessionAttendances.map((attendance) => (
-                    <div 
-                      key={attendance.id}
-                      className="flex items-center justify-between"
-                    >
+                  {attendances.map((attendance) => (
+                    <div key={attendance.id} className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <Avatar className="h-8 w-8">
-                          <AvatarImage src={attendance.user.photoUrl} />
+                          <AvatarImage src={attendance.user?.photo_url ?? undefined} />
                           <AvatarFallback className="text-xs">
-                            {attendance.user.firstName[0]}{attendance.user.lastName[0]}
+                            {attendance.user?.first_name?.[0] ?? "?"}
+                            {attendance.user?.last_name?.[0] ?? ""}
                           </AvatarFallback>
                         </Avatar>
                         <div>
                           <p className="text-sm font-medium">
-                            {attendance.user.firstName} {attendance.user.lastName}
-                            {attendance.user.id === user.id && (
-                              <span className="text-muted-foreground ml-1">(vous)</span>
-                            )}
+                            {attendance.user
+                              ? `${attendance.user.first_name} ${attendance.user.last_name}`
+                              : "Membre"}
+                            {attendance.user?.id === user.id ? (
+                              <span className="ml-1 text-muted-foreground">(vous)</span>
+                            ) : null}
                           </p>
                         </div>
                       </div>
@@ -500,8 +717,7 @@ export default function MemberSessionDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Quick Actions */}
-          {(isUpcoming || isOngoing) && (
+          {isUpcoming || isOngoing ? (
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">Actions</CardTitle>
@@ -515,7 +731,7 @@ export default function MemberSessionDetailPage() {
                 </Button>
               </CardContent>
             </Card>
-          )}
+          ) : null}
         </div>
       </div>
     </div>

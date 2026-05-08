@@ -6,7 +6,10 @@ import {
   buildAuthRedirectUrl,
   getAccessType,
   getCurrentMember,
+  isEmailAlreadyRegistered,
   mapAuthError,
+  reconcileMemberAccessForUser,
+  verifyInvitationToken,
   syncProfileFromUserMetadata,
 } from "@/lib/auth/server"
 
@@ -32,8 +35,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = await createServerSupabaseClient()
+    const normalizedEmail = validation.data.email.trim().toLowerCase()
 
+    const emailCheckResult = await isEmailAlreadyRegistered(normalizedEmail)
+    if (!emailCheckResult.ok) {
+      return NextResponse.json(
+        { error: "Impossible de verifier l'unicite de l'email pour le moment." },
+        { status: 503 }
+      )
+    }
+
+    if (emailCheckResult.exists) {
+      return NextResponse.json(
+        { error: "Un compte existe deja avec cet email." },
+        { status: 409 }
+      )
+    }
+
+    const supabase = await createServerSupabaseClient()
     const accessTypeResult = await getAccessType(supabase)
     if (!accessTypeResult.ok) {
       return NextResponse.json(
@@ -42,21 +61,42 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (
-      accessTypeResult.accessType === "invitation" &&
-      !validation.data.invitationToken
-    ) {
+    if (accessTypeResult.accessType !== "open") {
       return NextResponse.json(
         {
           error:
-            "Une invitation est requise pour creer un compte sur cette plateforme.",
+            "Les inscriptions sont desactivees pour le moment. Le groupe est en mode prive.",
         },
         { status: 403 }
       )
     }
 
+    const invitationToken = validation.data.invitationToken?.trim()
+
+    if (invitationToken) {
+      const invitationResult = await verifyInvitationToken(
+        supabase,
+        invitationToken,
+        validation.data.email
+      )
+
+      if (!invitationResult.ok) {
+        return NextResponse.json({ error: invitationResult.error }, { status: 500 })
+      }
+
+      if (!invitationResult.valid) {
+        return NextResponse.json(
+          {
+            error:
+              "Le token d'invitation est invalide, expire ou reserve a une autre adresse email.",
+          },
+          { status: 403 }
+        )
+      }
+    }
+
     const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email: validation.data.email,
+      email: normalizedEmail,
       password: validation.data.password,
       options: {
         emailRedirectTo: buildAuthRedirectUrl(request.url, "/confirm"),
@@ -65,7 +105,7 @@ export async function POST(request: NextRequest) {
           last_name: validation.data.lastName,
           pseudo: validation.data.pseudo,
           english_level: validation.data.englishLevel,
-          invitation_token: validation.data.invitationToken ?? null,
+          invitation_token: invitationToken ?? null,
         },
       },
     })
@@ -93,13 +133,20 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: syncResult.error }, { status: 500 })
       }
 
+      const reconcileResult = await reconcileMemberAccessForUser(signUpData.user)
+      if (!reconcileResult.ok) {
+        console.warn("Reconcile member access register:", reconcileResult.error)
+      }
+      const reconciledMember = reconcileResult.ok ? reconcileResult.member : null
+
       const memberResult = await getCurrentMember(supabase, signUpData.user.id)
       if (!memberResult.ok) {
         return NextResponse.json({ error: memberResult.error }, { status: 500 })
       }
 
-      memberStatus = memberResult.member?.status ?? "pending"
-      role = memberResult.member?.role ?? "member"
+      memberStatus =
+        memberResult.member?.status ?? reconciledMember?.status ?? "pending"
+      role = memberResult.member?.role ?? reconciledMember?.role ?? "member"
     }
 
     return NextResponse.json(

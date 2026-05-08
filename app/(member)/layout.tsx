@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
@@ -14,6 +14,7 @@ import {
   Menu,
   LogOut,
   ChevronDown,
+  ArrowRightLeft,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -29,7 +30,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { useAuth } from "@/lib/auth-context"
-import { notifications } from "@/lib/mock-data"
 import { Spinner } from "@/components/ui/spinner"
 
 // Navigation specifique aux membres (sans acces admin)
@@ -41,10 +41,16 @@ const memberNavigation = [
   { name: "FreeCodeCamp", href: "/member/freecodecamp", icon: GraduationCap },
 ]
 
-function MemberSidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
+function MemberSidebar({
+  className,
+  onNavigate,
+  unreadNotifications,
+}: {
+  className?: string
+  onNavigate?: () => void
+  unreadNotifications: number
+}) {
   const pathname = usePathname()
-  const { user } = useAuth()
-  const userNotifications = notifications.filter((n) => n.userId === user?.id && !n.isRead)
 
   return (
     <div className={cn("flex h-full flex-col bg-sidebar text-sidebar-foreground", className)}>
@@ -93,9 +99,9 @@ function MemberSidebar({ className, onNavigate }: { className?: string; onNaviga
         >
           <Bell className="h-5 w-5 flex-shrink-0" />
           Notifications
-          {userNotifications.length > 0 && (
+          {unreadNotifications > 0 && (
             <Badge variant="destructive" className="ml-auto h-5 min-w-5 px-1.5 text-xs">
-              {userNotifications.length}
+              {unreadNotifications}
             </Badge>
           )}
         </Link>
@@ -106,8 +112,62 @@ function MemberSidebar({ className, onNavigate }: { className?: string; onNaviga
 
 export default function MemberLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
   const pathname = usePathname()
   const { user, logout, isLoading, isAdmin } = useAuth()
+
+  const refreshUnreadNotifications = useCallback(async () => {
+    if (!user?.id) {
+      setUnreadNotifications(0)
+      return
+    }
+
+    try {
+      const response = await fetch("/api/notifications?unreadOnly=true&page=1&limit=1")
+      const payload = (await response.json().catch(() => ({}))) as {
+        success?: boolean
+        pagination?: {
+          total?: number
+        }
+        stats?: {
+          unreadCount?: number
+        }
+      }
+
+      if (!response.ok || !payload.success) {
+        setUnreadNotifications(0)
+        return
+      }
+
+      setUnreadNotifications(
+        payload.pagination?.total ?? payload.stats?.unreadCount ?? 0
+      )
+    } catch {
+      setUnreadNotifications(0)
+    }
+  }, [user?.id])
+
+  useEffect(() => {
+    void refreshUnreadNotifications()
+  }, [refreshUnreadNotifications, pathname])
+
+  useEffect(() => {
+    const handleNotificationsChanged = () => {
+      void refreshUnreadNotifications()
+    }
+
+    window.addEventListener(
+      "notifications:changed",
+      handleNotificationsChanged as EventListener
+    )
+
+    return () => {
+      window.removeEventListener(
+        "notifications:changed",
+        handleNotificationsChanged as EventListener
+      )
+    }
+  }, [refreshUnreadNotifications])
 
   // Show loading state
   if (isLoading) {
@@ -118,25 +178,10 @@ export default function MemberLayout({ children }: { children: React.ReactNode }
     )
   }
 
-  // Redirect admins to admin dashboard
-  if (isAdmin) {
-    return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background">
-        <p className="text-muted-foreground">Vous etes un administrateur.</p>
-        <Button asChild>
-          <Link href="/dashboard">Aller au tableau de bord admin</Link>
-        </Button>
-      </div>
-    )
-  }
-
   if (!user) {
     return null // Will redirect via auth context
   }
 
-  const userNotifications = notifications.filter(
-    (n) => n.userId === user.id && !n.isRead
-  )
   const currentPageLabel =
     memberNavigation.find(
       (item) =>
@@ -148,13 +193,16 @@ export default function MemberLayout({ children }: { children: React.ReactNode }
     <div className="flex h-screen bg-background">
       {/* Desktop Sidebar */}
       <aside className="hidden w-64 flex-shrink-0 lg:block">
-        <MemberSidebar />
+        <MemberSidebar unreadNotifications={unreadNotifications} />
       </aside>
 
       {/* Mobile Sidebar */}
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-64 p-0">
-          <MemberSidebar onNavigate={() => setMobileOpen(false)} />
+          <MemberSidebar
+            unreadNotifications={unreadNotifications}
+            onNavigate={() => setMobileOpen(false)}
+          />
         </SheetContent>
       </Sheet>
 
@@ -180,10 +228,19 @@ export default function MemberLayout({ children }: { children: React.ReactNode }
           </div>
 
           <div className="flex items-center gap-3">
+            {isAdmin ? (
+              <Button variant="outline" size="sm" asChild className="hidden md:inline-flex">
+                <Link href="/dashboard">
+                  <ArrowRightLeft className="mr-2 h-4 w-4" />
+                  Espace admin
+                </Link>
+              </Button>
+            ) : null}
+
             <Link href="/member/notifications">
               <Button variant="ghost" size="icon" className="relative">
                 <Bell className="h-5 w-5" />
-                {userNotifications.length > 0 && (
+                {unreadNotifications > 0 && (
                   <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-destructive" />
                 )}
                 <span className="sr-only">Notifications</span>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Clock,
   CheckCircle,
@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Filter,
   Eye,
+  Loader2,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,8 +27,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -41,23 +40,100 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Label } from "@/components/ui/label"
-import { absenceRequests, sessions, appConfig } from "@/lib/mock-data"
 import type { AbsenceRequestStatus } from "@/lib/types"
+
+type ApiAbsenceRow = {
+  id: string
+  session_id: string
+  user_id: string
+  reason: string | null
+  status: AbsenceRequestStatus
+  admin_comment: string | null
+  requested_at: string
+  reviewed_at: string | null
+  reviewed_by: string | null
+  user: {
+    id: string
+    first_name: string
+    last_name: string
+    pseudo: string
+    photo_url: string | null
+    english_level: "beginner" | "intermediate" | "advanced"
+  } | null
+  reviewer: {
+    id: string
+    first_name: string
+    last_name: string
+    pseudo: string
+    photo_url: string | null
+    english_level: "beginner" | "intermediate" | "advanced"
+  } | null
+  session: {
+    id: string
+    date: string
+    start_time: string
+    end_time: string
+    status: "upcoming" | "ongoing" | "completed" | "cancelled"
+  } | null
+}
+
+type ApiListResponse<T> = {
+  success?: boolean
+  error?: string
+  data?: T[]
+}
+
+type ApiSingleResponse<T> = {
+  success?: boolean
+  error?: string
+  data?: T
+}
+
+type ApiSettingsResponse = {
+  success?: boolean
+  error?: string
+  data?: {
+    absenceMinDelayHours: number
+  }
+}
 
 const statusConfig: Record<
   AbsenceRequestStatus,
   { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: React.ElementType }
 > = {
   pending: { label: "En attente", variant: "secondary", icon: Clock },
-  approved: { label: "Approuvée", variant: "default", icon: CheckCircle },
-  rejected: { label: "Refusée", variant: "destructive", icon: XCircle },
+  approved: { label: "Approuvee", variant: "default", icon: CheckCircle },
+  rejected: { label: "Refusee", variant: "destructive", icon: XCircle },
 }
 
-function AbsenceRequestCard({ request }: { request: typeof absenceRequests[0] }) {
-  const [adminComment, setAdminComment] = useState(request.adminComment || "")
+async function readJson<T>(response: Response): Promise<T> {
+  return (await response.json().catch(() => ({}))) as T
+}
+
+function formatSessionLabel(session: ApiAbsenceRow["session"]) {
+  if (!session) {
+    return "Seance indisponible"
+  }
+
+  return `Seance du ${new Date(session.date).toLocaleDateString("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  })}`
+}
+
+function AbsenceRequestCard({
+  request,
+  onReview,
+  isUpdating,
+}: {
+  request: ApiAbsenceRow
+  onReview: (id: string, status: "approved" | "rejected", adminComment: string) => Promise<void>
+  isUpdating: boolean
+}) {
+  const [adminComment, setAdminComment] = useState(request.admin_comment || "")
   const config = statusConfig[request.status]
   const StatusIcon = config.icon
-  const sessionDate = new Date(request.session.date)
 
   return (
     <Card>
@@ -65,17 +141,19 @@ function AbsenceRequestCard({ request }: { request: typeof absenceRequests[0] })
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
             <Avatar className="h-10 w-10">
-              <AvatarImage src={request.user.photoUrl} />
+              <AvatarImage src={request.user?.photo_url ?? undefined} />
               <AvatarFallback>
-                {request.user.firstName[0]}
-                {request.user.lastName[0]}
+                {(request.user?.first_name?.[0] ?? "U").toUpperCase()}
+                {(request.user?.last_name?.[0] ?? "N").toUpperCase()}
               </AvatarFallback>
             </Avatar>
             <div>
               <CardTitle className="text-base">
-                {request.user.firstName} {request.user.lastName}
+                {request.user
+                  ? `${request.user.first_name} ${request.user.last_name}`
+                  : request.user_id}
               </CardTitle>
-              <CardDescription>@{request.user.pseudo}</CardDescription>
+              <CardDescription>@{request.user?.pseudo ?? request.user_id}</CardDescription>
             </div>
           </div>
           <Badge variant={config.variant} className="gap-1">
@@ -85,41 +163,43 @@ function AbsenceRequestCard({ request }: { request: typeof absenceRequests[0] })
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="rounded-lg bg-muted/50 p-3 space-y-2">
+        <div className="space-y-2 rounded-lg bg-muted/50 p-3">
           <div className="flex items-center gap-2 text-sm">
             <Calendar className="h-4 w-4 text-muted-foreground" />
-            <span className="text-foreground">
-              Séance du {sessionDate.toLocaleDateString("fr-FR", {
-                weekday: "long",
-                day: "numeric",
-                month: "long",
-              })}
-            </span>
+            <span className="text-foreground">{formatSessionLabel(request.session)}</span>
           </div>
+          {request.session ? (
+            <div className="flex items-center gap-2 text-sm">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <span className="text-muted-foreground">
+                {request.session.start_time.slice(0, 5)} - {request.session.end_time.slice(0, 5)}
+              </span>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 text-sm">
             <Clock className="h-4 w-4 text-muted-foreground" />
             <span className="text-muted-foreground">
-              Demandé le {new Date(request.requestedAt).toLocaleDateString("fr-FR")}
+              Demande le {new Date(request.requested_at).toLocaleDateString("fr-FR")}
             </span>
           </div>
         </div>
 
-        {request.reason && (
+        {request.reason ? (
           <div className="space-y-1">
             <p className="text-sm font-medium text-foreground">Raison</p>
             <p className="text-sm text-muted-foreground">{request.reason}</p>
           </div>
-        )}
+        ) : null}
 
-        {request.adminComment && (
+        {request.admin_comment ? (
           <div className="space-y-1">
             <p className="text-sm font-medium text-foreground">Commentaire admin</p>
-            <p className="text-sm text-muted-foreground">{request.adminComment}</p>
+            <p className="text-sm text-muted-foreground">{request.admin_comment}</p>
           </div>
-        )}
+        ) : null}
 
-        {request.status === "pending" && (
-          <div className="space-y-3 pt-2 border-t border-border">
+        {request.status === "pending" ? (
+          <div className="space-y-3 border-t border-border pt-2">
             <div className="space-y-2">
               <Label htmlFor={`comment-${request.id}`} className="text-sm">
                 Commentaire (optionnel)
@@ -128,34 +208,52 @@ function AbsenceRequestCard({ request }: { request: typeof absenceRequests[0] })
                 id={`comment-${request.id}`}
                 placeholder="Ajouter un commentaire..."
                 value={adminComment}
-                onChange={(e) => setAdminComment(e.target.value)}
+                onChange={(event) => setAdminComment(event.target.value)}
                 rows={2}
+                disabled={isUpdating}
               />
             </div>
             <div className="flex gap-2">
-              <Button className="flex-1 bg-accent hover:bg-accent/90">
-                <CheckCircle className="mr-2 h-4 w-4" />
+              <Button
+                className="flex-1 bg-accent hover:bg-accent/90"
+                disabled={isUpdating}
+                onClick={() => onReview(request.id, "approved", adminComment)}
+              >
+                {isUpdating ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle className="mr-2 h-4 w-4" />
+                )}
                 Approuver
               </Button>
-              <Button variant="destructive" className="flex-1">
-                <XCircle className="mr-2 h-4 w-4" />
+              <Button
+                variant="destructive"
+                className="flex-1"
+                disabled={isUpdating}
+                onClick={() => onReview(request.id, "rejected", adminComment)}
+              >
+                {isUpdating ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <XCircle className="mr-2 h-4 w-4" />
+                )}
                 Refuser
               </Button>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {request.reviewedAt && (
+        {request.reviewed_at ? (
           <p className="text-xs text-muted-foreground">
-            Traité le {new Date(request.reviewedAt).toLocaleDateString("fr-FR")}
+            Traite le {new Date(request.reviewed_at).toLocaleDateString("fr-FR")}
           </p>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   )
 }
 
-function AbsenceRequestsTable() {
+function AbsenceRequestsTable({ requests }: { requests: ApiAbsenceRow[] }) {
   return (
     <Card>
       <CardHeader>
@@ -167,15 +265,21 @@ function AbsenceRequestsTable() {
           <TableHeader>
             <TableRow>
               <TableHead>Membre</TableHead>
-              <TableHead>Séance</TableHead>
+              <TableHead>Seance</TableHead>
               <TableHead>Raison</TableHead>
               <TableHead>Statut</TableHead>
-              <TableHead>Demandé le</TableHead>
+              <TableHead>Demande le</TableHead>
               <TableHead className="w-10"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {absenceRequests.map((request) => {
+            {requests.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                  Aucune demande pour ce filtre.
+                </TableCell>
+              </TableRow>
+            ) : requests.map((request) => {
               const config = statusConfig[request.status]
               const StatusIcon = config.icon
 
@@ -184,23 +288,27 @@ function AbsenceRequestsTable() {
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Avatar className="h-7 w-7">
-                        <AvatarImage src={request.user.photoUrl} />
+                        <AvatarImage src={request.user?.photo_url ?? undefined} />
                         <AvatarFallback className="text-xs">
-                          {request.user.firstName[0]}
+                          {(request.user?.first_name?.[0] ?? "U").toUpperCase()}
                         </AvatarFallback>
                       </Avatar>
                       <span className="text-sm font-medium text-foreground">
-                        {request.user.firstName} {request.user.lastName}
+                        {request.user
+                          ? `${request.user.first_name} ${request.user.last_name}`
+                          : request.user_id}
                       </span>
                     </div>
                   </TableCell>
                   <TableCell>
                     <span className="text-sm text-muted-foreground">
-                      {new Date(request.session.date).toLocaleDateString("fr-FR")}
+                      {request.session
+                        ? new Date(request.session.date).toLocaleDateString("fr-FR")
+                        : "Seance indisponible"}
                     </span>
                   </TableCell>
                   <TableCell>
-                    <span className="text-sm text-muted-foreground truncate max-w-[200px] block">
+                    <span className="block max-w-[200px] truncate text-sm text-muted-foreground">
                       {request.reason || "-"}
                     </span>
                   </TableCell>
@@ -212,7 +320,7 @@ function AbsenceRequestsTable() {
                   </TableCell>
                   <TableCell>
                     <span className="text-sm text-muted-foreground">
-                      {new Date(request.requestedAt).toLocaleDateString("fr-FR")}
+                      {new Date(request.requested_at).toLocaleDateString("fr-FR")}
                     </span>
                   </TableCell>
                   <TableCell>
@@ -224,47 +332,50 @@ function AbsenceRequestsTable() {
                       </DialogTrigger>
                       <DialogContent>
                         <DialogHeader>
-                          <DialogTitle>Détails de la demande</DialogTitle>
+                          <DialogTitle>Details de la demande</DialogTitle>
                         </DialogHeader>
                         <div className="space-y-4">
                           <div className="flex items-center gap-3">
                             <Avatar>
-                              <AvatarImage src={request.user.photoUrl} />
+                              <AvatarImage src={request.user?.photo_url ?? undefined} />
                               <AvatarFallback>
-                                {request.user.firstName[0]}
-                                {request.user.lastName[0]}
+                                {(request.user?.first_name?.[0] ?? "U").toUpperCase()}
+                                {(request.user?.last_name?.[0] ?? "N").toUpperCase()}
                               </AvatarFallback>
                             </Avatar>
                             <div>
                               <p className="font-medium text-foreground">
-                                {request.user.firstName} {request.user.lastName}
+                                {request.user
+                                  ? `${request.user.first_name} ${request.user.last_name}`
+                                  : request.user_id}
                               </p>
                               <p className="text-sm text-muted-foreground">
-                                @{request.user.pseudo}
+                                @{request.user?.pseudo ?? request.user_id}
                               </p>
                             </div>
                           </div>
                           <div className="space-y-2">
                             <p className="text-sm">
-                              <strong>Séance :</strong>{" "}
-                              {new Date(request.session.date).toLocaleDateString("fr-FR", {
-                                weekday: "long",
-                                day: "numeric",
-                                month: "long",
-                              })}
+                              <strong>Seance :</strong>{" "}
+                              {request.session
+                                ? new Date(request.session.date).toLocaleDateString("fr-FR", {
+                                    weekday: "long",
+                                    day: "numeric",
+                                    month: "long",
+                                  })
+                                : "Indisponible"}
                             </p>
                             <p className="text-sm">
-                              <strong>Raison :</strong> {request.reason || "Non spécifiée"}
+                              <strong>Raison :</strong> {request.reason || "Non specifiee"}
                             </p>
                             <p className="text-sm">
-                              <strong>Statut :</strong>{" "}
-                              <Badge variant={config.variant}>{config.label}</Badge>
+                              <strong>Statut :</strong> <Badge variant={config.variant}>{config.label}</Badge>
                             </p>
-                            {request.adminComment && (
+                            {request.admin_comment ? (
                               <p className="text-sm">
-                                <strong>Commentaire admin :</strong> {request.adminComment}
+                                <strong>Commentaire admin :</strong> {request.admin_comment}
                               </p>
-                            )}
+                            ) : null}
                           </div>
                         </div>
                       </DialogContent>
@@ -282,26 +393,107 @@ function AbsenceRequestsTable() {
 
 export default function AbsencesPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [requests, setRequests] = useState<ApiAbsenceRow[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState("")
+  const [updatingId, setUpdatingId] = useState<string>("")
+  const [absenceMinDelayHours, setAbsenceMinDelayHours] = useState(24)
 
-  const pendingRequests = absenceRequests.filter((r) => r.status === "pending")
-  const approvedRequests = absenceRequests.filter((r) => r.status === "approved")
-  const rejectedRequests = absenceRequests.filter((r) => r.status === "rejected")
+  const loadData = useCallback(async () => {
+    setIsLoading(true)
+    setErrorMessage("")
 
-  const filteredRequests =
-    statusFilter === "all"
-      ? absenceRequests
-      : absenceRequests.filter((r) => r.status === statusFilter)
+    try {
+      const [absencesResponse, settingsResponse] = await Promise.all([
+        fetch("/api/absences?limit=100&page=1", { cache: "no-store" }),
+        fetch("/api/settings", { cache: "no-store" }),
+      ])
+
+      const absencesPayload = await readJson<ApiListResponse<ApiAbsenceRow>>(absencesResponse)
+      const settingsPayload = await readJson<ApiSettingsResponse>(settingsResponse)
+
+      if (!absencesResponse.ok || !absencesPayload.success || !absencesPayload.data) {
+        setRequests([])
+        setErrorMessage(absencesPayload.error || "Impossible de charger les absences.")
+        return
+      }
+
+      setRequests(absencesPayload.data)
+
+      if (settingsResponse.ok && settingsPayload.success && settingsPayload.data) {
+        setAbsenceMinDelayHours(settingsPayload.data.absenceMinDelayHours)
+      }
+    } catch {
+      setRequests([])
+      setErrorMessage("Impossible de contacter le serveur.")
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadData()
+  }, [loadData])
+
+  const handleReview = useCallback(
+    async (id: string, status: "approved" | "rejected", adminComment: string) => {
+      setUpdatingId(id)
+      setErrorMessage("")
+
+      try {
+        const response = await fetch(`/api/absences/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status, adminComment: adminComment.trim() || null }),
+        })
+
+        const payload = await readJson<ApiSingleResponse<ApiAbsenceRow>>(response)
+
+        if (!response.ok || !payload.success || !payload.data) {
+          setErrorMessage(payload.error || "Mise a jour impossible.")
+          return
+        }
+
+        setRequests((prev) => prev.map((item) => (item.id === id ? payload.data! : item)))
+      } catch {
+        setErrorMessage("Impossible de contacter le serveur.")
+      } finally {
+        setUpdatingId("")
+      }
+    },
+    []
+  )
+
+  const pendingRequests = useMemo(
+    () => requests.filter((request) => request.status === "pending"),
+    [requests]
+  )
+  const approvedRequests = useMemo(
+    () => requests.filter((request) => request.status === "approved"),
+    [requests]
+  )
+  const rejectedRequests = useMemo(
+    () => requests.filter((request) => request.status === "rejected"),
+    [requests]
+  )
+
+  const filteredRequests = useMemo(
+    () =>
+      statusFilter === "all"
+        ? requests
+        : requests.filter((request) => request.status === statusFilter),
+    [requests, statusFilter]
+  )
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Demandes d&apos;absence</h1>
-        <p className="text-muted-foreground">
-          Gérez les demandes d&apos;absence des membres
-        </p>
+        <p className="text-muted-foreground">Gerez les demandes d&apos;absence des membres</p>
       </div>
 
-      {/* Stats */}
+      {errorMessage ? <p className="text-sm text-destructive">{errorMessage}</p> : null}
+
       <div className="grid gap-4 sm:grid-cols-4">
         <Card>
           <CardContent className="flex items-center gap-4 p-4">
@@ -309,7 +501,7 @@ export default function AbsencesPage() {
               <MessageSquare className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <p className="text-2xl font-bold text-foreground">{absenceRequests.length}</p>
+              <p className="text-2xl font-bold text-foreground">{requests.length}</p>
               <p className="text-sm text-muted-foreground">Total demandes</p>
             </div>
           </CardContent>
@@ -332,7 +524,7 @@ export default function AbsencesPage() {
             </div>
             <div>
               <p className="text-2xl font-bold text-foreground">{approvedRequests.length}</p>
-              <p className="text-sm text-muted-foreground">Approuvées</p>
+              <p className="text-sm text-muted-foreground">Approuvees</p>
             </div>
           </CardContent>
         </Card>
@@ -343,64 +535,76 @@ export default function AbsencesPage() {
             </div>
             <div>
               <p className="text-2xl font-bold text-foreground">{rejectedRequests.length}</p>
-              <p className="text-sm text-muted-foreground">Refusées</p>
+              <p className="text-sm text-muted-foreground">Refusees</p>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Info Card */}
       <Card className="border-primary/20 bg-primary/5">
         <CardContent className="flex items-start gap-3 p-4">
-          <AlertCircle className="h-5 w-5 text-primary flex-shrink-0 mt-0.5" />
+          <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-primary" />
           <div>
-            <p className="font-medium text-foreground">Délai minimum configuré</p>
+            <p className="font-medium text-foreground">Delai minimum configure</p>
             <p className="text-sm text-muted-foreground">
               Les membres doivent soumettre leur demande au moins{" "}
-              <strong>{appConfig.absenceMinDelayHours} heures</strong> avant la séance.
+              <strong>{absenceMinDelayHours} heures</strong> avant la seance.
             </p>
           </div>
         </CardContent>
       </Card>
 
-      {/* Pending Requests */}
-      {pendingRequests.length > 0 && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-foreground">
-              Demandes en attente ({pendingRequests.length})
-            </h2>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {pendingRequests.map((request) => (
-              <AbsenceRequestCard key={request.id} request={request} />
-            ))}
-          </div>
-        </div>
+      {isLoading ? (
+        <Card>
+          <CardContent className="flex items-center gap-2 p-6 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Chargement des demandes...
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {pendingRequests.length > 0 ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-foreground">
+                  Demandes en attente ({pendingRequests.length})
+                </h2>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {pendingRequests.map((request) => (
+                  <AbsenceRequestCard
+                    key={request.id}
+                    request={request}
+                    onReview={handleReview}
+                    isUpdating={updatingId === request.id}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-4">
+                <Filter className="h-4 w-4 text-muted-foreground" />
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue placeholder="Filtrer par statut" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Tous les statuts</SelectItem>
+                    <SelectItem value="pending">En attente</SelectItem>
+                    <SelectItem value="approved">Approuvees</SelectItem>
+                    <SelectItem value="rejected">Refusees</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </CardContent>
+          </Card>
+
+          <AbsenceRequestsTable requests={filteredRequests} />
+        </>
       )}
-
-      {/* Filter */}
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex items-center gap-4">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Filtrer par statut" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les statuts</SelectItem>
-                <SelectItem value="pending">En attente</SelectItem>
-                <SelectItem value="approved">Approuvées</SelectItem>
-                <SelectItem value="rejected">Refusées</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* All Requests Table */}
-      <AbsenceRequestsTable />
     </div>
   )
 }

@@ -29,7 +29,8 @@ create or replace function public.get_member_status()
 returns text
 language sql
 stable
-set search_path = public
+security definer
+set search_path = public, pg_temp
 as $$
   select m.status
   from public.members m
@@ -41,7 +42,8 @@ create or replace function public.is_active_member()
 returns boolean
 language sql
 stable
-set search_path = public
+security definer
+set search_path = public, pg_temp
 as $$
   select exists (
     select 1
@@ -55,7 +57,8 @@ create or replace function public.is_admin()
 returns boolean
 language sql
 stable
-set search_path = public
+security definer
+set search_path = public, pg_temp
 as $$
   select exists (
     select 1

@@ -128,10 +128,6 @@ export async function proxy(request: NextRequest) {
     return redirectTo(request, "/member")
   }
 
-  if (isMemberRoute && member.role === "admin") {
-    return redirectTo(request, "/dashboard")
-  }
-
   if (isAuthRoute || isHomeRoute || isInviteRoute) {
     return redirectTo(request, member.role === "admin" ? "/dashboard" : "/member")
   }

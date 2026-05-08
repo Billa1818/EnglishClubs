@@ -111,7 +111,8 @@ create or replace function public.get_member_status()
 returns text
 language sql
 stable
-set search_path = public
+security definer
+set search_path = public, pg_temp
 as $$
   select m.status
   from public.members m
@@ -123,7 +124,8 @@ create or replace function public.is_active_member()
 returns boolean
 language sql
 stable
-set search_path = public
+security definer
+set search_path = public, pg_temp
 as $$
   select exists (
     select 1
@@ -137,7 +139,8 @@ create or replace function public.is_admin()
 returns boolean
 language sql
 stable
-set search_path = public
+security definer
+set search_path = public, pg_temp
 as $$
   select exists (
     select 1
@@ -158,6 +161,7 @@ grant execute on function public.is_admin() to authenticated;
 create table if not exists public.app_config (
   id uuid primary key default '00000000-0000-0000-0000-000000000001',
   app_name text not null default 'English Club',
+  app_logo_url text,
   access_type text not null default 'open' check (
     access_type in ('open', 'invitation')
   ),
@@ -279,18 +283,12 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  active_member_count bigint;
 begin
-  select count(*) into active_member_count
-  from public.members
-  where status = 'active';
-
   insert into public.members (user_id, status, role, joined_at)
   values (
     new.id,
-    'active',
-    case when active_member_count = 0 then 'admin' else 'member' end,
+    'pending',
+    'member',
     now()
   )
   on conflict (user_id) do nothing;

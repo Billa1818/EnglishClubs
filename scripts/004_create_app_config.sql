@@ -3,6 +3,7 @@
 create table if not exists public.app_config (
   id uuid primary key default '00000000-0000-0000-0000-000000000001',
   app_name text not null default 'English Club',
+  app_logo_url text,
   access_type text not null default 'open' check (
     access_type in ('open', 'invitation')
   ),
@@ -17,6 +18,9 @@ create table if not exists public.app_config (
   updated_at timestamptz not null default now(),
   constraint app_config_singleton check (id = '00000000-0000-0000-0000-000000000001')
 );
+
+alter table public.app_config
+  add column if not exists app_logo_url text;
 
 create trigger tr_app_config_updated_at
 before update on public.app_config

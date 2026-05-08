@@ -1,7 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { Clock, CheckCircle, XCircle, Mail, ArrowLeft } from "lucide-react"
+import { useState } from "react"
+import { Clock, CheckCircle, XCircle, Mail, ArrowLeft, Loader2, LogOut } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -56,7 +57,8 @@ function getStatusLabel(status: PendingStatus) {
 }
 
 export default function PendingPage() {
-  const { authUser, profile, member, authError, isLoading, isAuthenticated } = useAuth()
+  const { authUser, profile, member, user, authError, isLoading, isAuthenticated, logout } = useAuth()
+  const [isSigningOut, setIsSigningOut] = useState(false)
 
   if (isLoading) {
     return (
@@ -104,6 +106,24 @@ export default function PendingPage() {
 
   const config = statusConfig[status]
   const Icon = config.icon
+  const displayFirstName = profile?.first_name || user?.firstName || "-"
+  const displayLastName = profile?.last_name || user?.lastName || ""
+  const displayPseudo = profile?.pseudo || user?.pseudo || "-"
+  const displayEnglishLevel = profile?.english_level || user?.englishLevel || "-"
+  const requestDate = member?.created_at || authUser?.created_at || null
+
+  const handleSignOut = async () => {
+    if (isSigningOut) {
+      return
+    }
+
+    setIsSigningOut(true)
+    try {
+      await logout()
+    } finally {
+      setIsSigningOut(false)
+    }
+  }
 
   const steps = [
     {
@@ -141,7 +161,9 @@ export default function PendingPage() {
       <div className="space-y-6">
         {authError && (
           <Alert variant="destructive">
-            <AlertDescription>{authError}</AlertDescription>
+            <AlertDescription>
+              Impossible de charger votre statut pour le moment. Reessayez dans quelques instants.
+            </AlertDescription>
           </Alert>
         )}
 
@@ -161,40 +183,31 @@ export default function PendingPage() {
 
         <Card>
           <CardContent className="p-6">
-            <div className="flex items-center justify-between">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-4">
               {steps.map((step, index) => (
-                <div key={step.label} className="flex items-center">
-                  <div className="flex flex-col items-center">
-                    <div
-                      className={`flex h-10 w-10 items-center justify-center rounded-full border-2 transition-colors ${
-                        step.completed
-                          ? "border-green-500 bg-green-500 text-white"
-                          : step.current
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-muted bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {step.completed ? (
-                        <CheckCircle className="h-5 w-5" />
-                      ) : (
-                        <span className="text-sm font-medium">{index + 1}</span>
-                      )}
-                    </div>
-                    <span
-                      className={`mt-2 text-xs font-medium ${
-                        step.completed || step.current ? "text-foreground" : "text-muted-foreground"
-                      }`}
-                    >
-                      {step.label}
-                    </span>
+                <div key={step.label} className="flex flex-col items-center text-center">
+                  <div
+                    className={`flex h-10 w-10 items-center justify-center rounded-full border-2 transition-colors ${
+                      step.completed
+                        ? "border-green-500 bg-green-500 text-white"
+                        : step.current
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-muted bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {step.completed ? (
+                      <CheckCircle className="h-5 w-5" />
+                    ) : (
+                      <span className="text-sm font-medium">{index + 1}</span>
+                    )}
                   </div>
-                  {index < steps.length - 1 && (
-                    <div
-                      className={`mx-2 h-0.5 w-12 lg:w-20 ${
-                        step.completed ? "bg-green-500" : "bg-muted"
-                      }`}
-                    />
-                  )}
+                  <span
+                    className={`mt-2 text-xs font-medium leading-tight break-words ${
+                      step.completed || step.current ? "text-foreground" : "text-muted-foreground"
+                    }`}
+                  >
+                    {step.label}
+                  </span>
                 </div>
               ))}
             </div>
@@ -208,12 +221,12 @@ export default function PendingPage() {
               <div>
                 <p className="text-muted-foreground">Nom</p>
                 <p className="font-medium">
-                  {profile?.first_name || "-"} {profile?.last_name || ""}
+                  {displayFirstName} {displayLastName}
                 </p>
               </div>
               <div>
                 <p className="text-muted-foreground">Pseudo</p>
-                <p className="font-medium">{profile?.pseudo || "-"}</p>
+                <p className="font-medium">{displayPseudo}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">Email</p>
@@ -221,13 +234,13 @@ export default function PendingPage() {
               </div>
               <div>
                 <p className="text-muted-foreground">Niveau d'anglais</p>
-                <p className="font-medium capitalize">{profile?.english_level || "-"}</p>
+                <p className="font-medium capitalize">{displayEnglishLevel}</p>
               </div>
               <div className="col-span-2">
                 <p className="text-muted-foreground">Date de demande</p>
                 <p className="font-medium">
-                  {member?.created_at
-                    ? new Date(member.created_at).toLocaleDateString("fr-FR", {
+                  {requestDate
+                    ? new Date(requestDate).toLocaleDateString("fr-FR", {
                         day: "numeric",
                         month: "long",
                         year: "numeric",
@@ -250,11 +263,26 @@ export default function PendingPage() {
             </Button>
           )}
 
-          {status !== "approved" && (
-            <Button asChild variant="outline" className="w-full" size="lg">
-              <Link href="/login">Retour a la connexion</Link>
-            </Button>
-          )}
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            size="lg"
+            onClick={() => void handleSignOut()}
+            disabled={isSigningOut}
+          >
+            {isSigningOut ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Deconnexion...
+              </>
+            ) : (
+              <>
+                <LogOut className="mr-2 h-4 w-4" />
+                Se deconnecter
+              </>
+            )}
+          </Button>
         </div>
       </div>
     </div>

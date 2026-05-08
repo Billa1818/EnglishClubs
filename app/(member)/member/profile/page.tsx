@@ -1,18 +1,17 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
-  User,
   Mail,
   Camera,
   Save,
   Award,
   Calendar,
   TrendingUp,
-  BookOpen,
   Lock,
   Eye,
   EyeOff,
+  Upload,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,26 +38,57 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { Spinner } from "@/components/ui/spinner"
 import { useAuth } from "@/lib/auth-context"
 import { createClient as createBrowserSupabaseClient } from "@/lib/supabase/client"
-import { sessions, attendances, fccProgressions } from "@/lib/mock-data"
-import { Spinner } from "@/components/ui/spinner"
+
+type AttendanceHistoryRow = {
+  id: string
+  status: "declared" | "confirmed" | "absent" | "excused"
+  session: {
+    id: string
+    status: "upcoming" | "ongoing" | "completed" | "cancelled"
+  } | null
+}
+
+type FccRow = {
+  id: string
+  certificate_name: string | null
+  validated_at: string | null
+}
+
+function parseApiError(payload: unknown, fallback: string) {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "error" in payload &&
+    typeof payload.error === "string"
+  ) {
+    return payload.error
+  }
+  return fallback
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, { cache: "no-store" })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(parseApiError(payload, `Echec de chargement: ${url}`))
+  }
+  return payload as T
+}
 
 function mapClientAuthError(message: string) {
   const normalized = message.toLowerCase()
-
   if (normalized.includes("invalid login credentials")) {
     return "Le mot de passe actuel est incorrect."
   }
-
   if (normalized.includes("password should be at least")) {
     return "Le mot de passe ne respecte pas les criteres de securite."
   }
-
   if (normalized.includes("same_password")) {
     return "Le nouveau mot de passe doit etre different de l'ancien."
   }
-
   return message
 }
 
@@ -66,45 +96,114 @@ function mapProfileError(message: string, code?: string) {
   if (code === "23505" || message.toLowerCase().includes("duplicate key")) {
     return "Ce pseudo est deja utilise. Choisissez-en un autre."
   }
-
   return "Impossible de mettre a jour le profil pour le moment."
+}
+
+function getLevelLabel(level: string) {
+  if (level === "advanced") return "Avance"
+  if (level === "intermediate") return "Intermediaire"
+  return "Debutant"
 }
 
 export default function MemberProfilePage() {
   const { user, member, refreshProfile, isLoading } = useAuth()
   const supabase = useMemo(() => createBrowserSupabaseClient(), [])
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
   const [isEditing, setIsEditing] = useState(false)
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false)
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
   const [isProfileLoading, setIsProfileLoading] = useState(false)
   const [isPasswordLoading, setIsPasswordLoading] = useState(false)
+  const [isAvatarLoading, setIsAvatarLoading] = useState(false)
   const [profileSuccess, setProfileSuccess] = useState(false)
   const [profileError, setProfileError] = useState("")
   const [passwordSuccess, setPasswordSuccess] = useState(false)
   const [passwordError, setPasswordError] = useState("")
-  
-  // Form state
+  const [statsError, setStatsError] = useState<string | null>(null)
+  const [attendanceRate, setAttendanceRate] = useState(0)
+  const [completedSessionsCount, setCompletedSessionsCount] = useState(0)
+  const [confirmedAttendancesCount, setConfirmedAttendancesCount] = useState(0)
+  const [completedCertificates, setCompletedCertificates] = useState(0)
+
   const [firstName, setFirstName] = useState(user?.firstName || "")
   const [lastName, setLastName] = useState(user?.lastName || "")
   const [pseudo, setPseudo] = useState(user?.pseudo || "")
-  const [englishLevel, setEnglishLevel] = useState<"beginner" | "intermediate" | "advanced">(user?.englishLevel || "beginner")
-  
-  // Password state
+  const [englishLevel, setEnglishLevel] = useState<"beginner" | "intermediate" | "advanced">(
+    user?.englishLevel || "beginner"
+  )
+
   const [currentPassword, setCurrentPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
 
   useEffect(() => {
-    if (!user) {
-      return
-    }
-
+    if (!user) return
     setFirstName(user.firstName)
     setLastName(user.lastName)
     setPseudo(user.pseudo)
     setEnglishLevel(user.englishLevel)
   }, [user])
+
+  useEffect(() => {
+    if (!member?.id || !user?.id) {
+      return
+    }
+
+    let isMounted = true
+
+    const loadStats = async () => {
+      setStatsError(null)
+
+      try {
+        const [attendanceResponse, fccResponse] = await Promise.all([
+          fetchJson<{ data: AttendanceHistoryRow[] }>(
+            `/api/members/${member.id}/attendances?limit=100&page=1`
+          ),
+          fetchJson<{ data: FccRow[] }>(`/api/fcc/${encodeURIComponent(user.id)}`),
+        ])
+
+        const attendances = attendanceResponse.data ?? []
+        const completedAttendances = attendances.filter(
+          (attendance) => attendance.session?.status === "completed"
+        )
+        const confirmedAttendances = completedAttendances.filter(
+          (attendance) => attendance.status === "confirmed"
+        )
+        const sessionsCount = completedAttendances.length
+        const certificatesCount = (fccResponse.data ?? []).filter(
+          (progression) => progression.certificate_name || progression.validated_at
+        ).length
+
+        if (!isMounted) {
+          return
+        }
+
+        setCompletedSessionsCount(sessionsCount)
+        setConfirmedAttendancesCount(confirmedAttendances.length)
+        setAttendanceRate(
+          sessionsCount > 0 ? Math.round((confirmedAttendances.length / sessionsCount) * 100) : 0
+        )
+        setCompletedCertificates(certificatesCount)
+      } catch (caughtError) {
+        if (!isMounted) {
+          return
+        }
+        setStatsError(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Impossible de charger les statistiques du profil."
+        )
+      }
+    }
+
+    void loadStats()
+
+    return () => {
+      isMounted = false
+    }
+  }, [member?.id, user?.id])
 
   if (isLoading) {
     return (
@@ -114,19 +213,9 @@ export default function MemberProfilePage() {
     )
   }
 
-  if (!user) return null
-
-  // Get user stats
-  const userAttendances = attendances.filter(a => a.user.id === user.id)
-  const userFCCProgressions = fccProgressions.filter(p => p.user.id === user.id)
-  
-  const completedSessions = sessions.filter(s => s.status === "completed")
-  const confirmedAttendances = userAttendances.filter(a => a.status === "confirmed")
-  const attendanceRate = completedSessions.length > 0 
-    ? Math.round((confirmedAttendances.length / completedSessions.length) * 100) 
-    : 0
-  
-  const completedCertificates = userFCCProgressions.filter(p => p.certificateName).length
+  if (!user) {
+    return null
+  }
 
   const handleSaveProfile = async () => {
     setProfileError("")
@@ -175,7 +264,6 @@ export default function MemberProfilePage() {
     }
 
     await refreshProfile()
-
     setProfileSuccess(true)
     setIsEditing(false)
     setIsProfileLoading(false)
@@ -189,17 +277,14 @@ export default function MemberProfilePage() {
       setPasswordError("Veuillez remplir tous les champs du mot de passe.")
       return
     }
-
     if (newPassword !== confirmPassword) {
       setPasswordError("Les mots de passe ne correspondent pas.")
       return
     }
-
     if (newPassword.length < 8) {
       setPasswordError("Le nouveau mot de passe doit contenir au moins 8 caracteres.")
       return
     }
-
     if (newPassword === currentPassword) {
       setPasswordError("Le nouveau mot de passe doit etre different de l'ancien.")
       return
@@ -226,12 +311,41 @@ export default function MemberProfilePage() {
     setIsPasswordLoading(false)
   }
 
-  const getLevelLabel = (level: string) => {
-    switch (level) {
-      case "beginner": return "Debutant"
-      case "intermediate": return "Intermediaire"
-      case "advanced": return "Avance"
-      default: return level
+  const handleAvatarChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    setProfileError("")
+    setProfileSuccess(false)
+    setIsAvatarLoading(true)
+
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+
+      const response = await fetch("/api/profile/avatar", {
+        method: "POST",
+        body: formData,
+      })
+      const payload = await response.json().catch(() => null)
+
+      if (!response.ok) {
+        throw new Error(parseApiError(payload, "Impossible d'envoyer l'avatar."))
+      }
+
+      await refreshProfile()
+      setProfileSuccess(true)
+    } catch (caughtError) {
+      setProfileError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Impossible d'envoyer l'avatar."
+      )
+    } finally {
+      event.target.value = ""
+      setIsAvatarLoading(false)
     }
   }
 
@@ -244,17 +358,20 @@ export default function MemberProfilePage() {
         </p>
       </div>
 
+      {statsError ? (
+        <Alert variant="destructive">
+          <AlertDescription>{statsError}</AlertDescription>
+        </Alert>
+      ) : null}
+
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Profile Card */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="space-y-6 lg:col-span-2">
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle>Informations personnelles</CardTitle>
-                  <CardDescription>
-                    Mettez a jour vos informations de profil
-                  </CardDescription>
+                  <CardDescription>Mettez a jour vos informations de profil</CardDescription>
                 </div>
                 {!isEditing ? (
                   <Button variant="outline" onClick={() => setIsEditing(true)}>
@@ -269,7 +386,7 @@ export default function MemberProfilePage() {
                     >
                       Annuler
                     </Button>
-                    <Button onClick={handleSaveProfile} disabled={isProfileLoading}>
+                    <Button onClick={() => void handleSaveProfile()} disabled={isProfileLoading}>
                       <Save className="mr-2 h-4 w-4" />
                       {isProfileLoading ? "Enregistrement..." : "Enregistrer"}
                     </Button>
@@ -278,35 +395,46 @@ export default function MemberProfilePage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
-              {profileError && (
+              {profileError ? (
                 <Alert variant="destructive">
                   <AlertDescription>{profileError}</AlertDescription>
                 </Alert>
-              )}
+              ) : null}
 
-              {profileSuccess && (
+              {profileSuccess ? (
                 <Alert className="border-green-500 bg-green-50 text-green-700">
                   <AlertDescription>Profil mis a jour avec succes.</AlertDescription>
                 </Alert>
-              )}
+              ) : null}
 
-              {/* Avatar */}
               <div className="flex items-center gap-6">
                 <div className="relative">
                   <Avatar className="h-24 w-24 border-4 border-background shadow-lg">
                     <AvatarImage src={user.photoUrl} alt={user.firstName} />
                     <AvatarFallback className="text-2xl">
-                      {user.firstName[0]}{user.lastName[0]}
+                      {user.firstName[0]}
+                      {user.lastName[0]}
                     </AvatarFallback>
                   </Avatar>
-                  {isEditing && (
-                    <Button 
-                      size="icon" 
-                      className="absolute -bottom-2 -right-2 h-8 w-8 rounded-full"
-                    >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={(event) => void handleAvatarChange(event)}
+                  />
+                  <Button
+                    size="icon"
+                    className="absolute -bottom-2 -right-2 h-8 w-8 rounded-full"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isAvatarLoading}
+                  >
+                    {isAvatarLoading ? (
+                      <Upload className="h-4 w-4 animate-pulse" />
+                    ) : (
                       <Camera className="h-4 w-4" />
-                    </Button>
-                  )}
+                    )}
+                  </Button>
                 </div>
                 <div>
                   <h3 className="text-xl font-semibold">
@@ -321,7 +449,6 @@ export default function MemberProfilePage() {
 
               <Separator />
 
-              {/* Form Fields */}
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="firstName">Prenom</Label>
@@ -399,7 +526,6 @@ export default function MemberProfilePage() {
 
               <Separator />
 
-              {/* Email (read-only) */}
               <div className="space-y-2">
                 <Label>Adresse email</Label>
                 <div className="flex items-center gap-2">
@@ -413,20 +539,17 @@ export default function MemberProfilePage() {
             </CardContent>
           </Card>
 
-          {/* Security Card */}
           <Card>
             <CardHeader>
               <CardTitle>Securite</CardTitle>
-              <CardDescription>
-                Gerez votre mot de passe
-              </CardDescription>
+              <CardDescription>Gerez votre mot de passe</CardDescription>
             </CardHeader>
             <CardContent>
-              {passwordSuccess && (
+              {passwordSuccess ? (
                 <Alert className="mb-4 border-green-500 bg-green-50 text-green-700">
                   <AlertDescription>Mot de passe modifie avec succes.</AlertDescription>
                 </Alert>
-              )}
+              ) : null}
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -436,7 +559,7 @@ export default function MemberProfilePage() {
                   <div>
                     <p className="font-medium">Mot de passe</p>
                     <p className="text-sm text-muted-foreground">
-                      Derniere modification il y a 30 jours
+                      Modifiez-le si vous avez un doute sur la securite du compte
                     </p>
                   </div>
                 </div>
@@ -452,11 +575,11 @@ export default function MemberProfilePage() {
                       </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4 py-4">
-                      {passwordError && (
+                      {passwordError ? (
                         <Alert variant="destructive">
                           <AlertDescription>{passwordError}</AlertDescription>
                         </Alert>
-                      )}
+                      ) : null}
 
                       <div className="space-y-2">
                         <Label htmlFor="currentPassword">Mot de passe actuel</Label>
@@ -526,19 +649,18 @@ export default function MemberProfilePage() {
                       </div>
                     </div>
                     <DialogFooter>
-                      <Button variant="outline" onClick={() => setIsPasswordDialogOpen(false)}>
+                      <Button
+                        variant="outline"
+                        onClick={() => setIsPasswordDialogOpen(false)}
+                        disabled={isPasswordLoading}
+                      >
                         Annuler
                       </Button>
-                      <Button 
-                        onClick={handleChangePassword}
-                        disabled={
-                          isPasswordLoading ||
-                          !currentPassword ||
-                          !newPassword ||
-                          newPassword !== confirmPassword
-                        }
+                      <Button
+                        onClick={() => void handleChangePassword()}
+                        disabled={isPasswordLoading}
                       >
-                        {isPasswordLoading ? "Modification..." : "Modifier"}
+                        {isPasswordLoading ? "Modification..." : "Enregistrer"}
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -548,81 +670,44 @@ export default function MemberProfilePage() {
           </Card>
         </div>
 
-        {/* Stats Sidebar */}
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Statistiques</CardTitle>
+              <CardTitle>Statistiques</CardTitle>
+              <CardDescription>Votre activite dans le club</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-muted-foreground">Taux de presence</span>
-                  <span className="text-sm font-medium">{attendanceRate}%</span>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium">Taux de presence</span>
+                  </div>
+                  <span className="text-2xl font-bold">{attendanceRate}%</span>
                 </div>
                 <Progress value={attendanceRate} />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="text-center p-3 rounded-lg bg-muted/50">
-                  <Calendar className="h-5 w-5 mx-auto text-primary mb-1" />
-                  <p className="text-2xl font-bold">{confirmedAttendances.length}</p>
-                  <p className="text-xs text-muted-foreground">Presences</p>
-                </div>
-                <div className="text-center p-3 rounded-lg bg-muted/50">
-                  <Award className="h-5 w-5 mx-auto text-amber-500 mb-1" />
-                  <p className="text-2xl font-bold">{completedCertificates}</p>
-                  <p className="text-xs text-muted-foreground">Certificats</p>
-                </div>
+                <p className="text-xs text-muted-foreground">
+                  {confirmedAttendancesCount} sur {completedSessionsCount} seances confirmees
+                </p>
               </div>
 
               <Separator />
 
-              <div>
-                <p className="text-sm font-medium mb-3">Membre depuis</p>
-                <p className="text-muted-foreground">
-                  {member ? new Date(member.joined_at).toLocaleDateString("fr-FR", {
-                    day: "numeric",
-                    month: "long",
-                    year: "numeric"
-                  }) : "N/A"}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Progression FCC</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {userFCCProgressions.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">
-                  Aucune progression enregistree
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {userFCCProgressions.slice(0, 3).map((prog) => (
-                    <div key={prog.id} className="flex items-center gap-3">
-                      <div className={`flex h-8 w-8 items-center justify-center rounded-full ${
-                        prog.certificateName ? "bg-amber-500/10" : "bg-blue-500/10"
-                      }`}>
-                        {prog.certificateName ? (
-                          <Award className="h-4 w-4 text-amber-500" />
-                        ) : (
-                          <BookOpen className="h-4 w-4 text-blue-500" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{prog.track}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {prog.modulesCompleted}/5 modules
-                        </p>
-                      </div>
-                    </div>
-                  ))}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Calendar className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">Seances completes</span>
                 </div>
-              )}
+                <span className="text-xl font-semibold">{completedSessionsCount}</span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Award className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">Certificats FCC</span>
+                </div>
+                <span className="text-xl font-semibold">{completedCertificates}</span>
+              </div>
             </CardContent>
           </Card>
         </div>

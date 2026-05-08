@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { Suspense, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useForm } from "react-hook-form"
@@ -42,7 +42,7 @@ const englishLevels = [
   { value: "advanced", label: "Avance", description: "Je suis a l'aise en anglais" },
 ] as const
 
-export default function RegisterPage() {
+function RegisterPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const invitationToken = searchParams.get("token")
@@ -334,5 +334,19 @@ export default function RegisterPage() {
         </Link>
       </div>
     </div>
+  )
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin" />
+        </div>
+      }
+    >
+      <RegisterPageContent />
+    </Suspense>
   )
 }

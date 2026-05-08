@@ -6,18 +6,12 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  active_member_count bigint;
 begin
-  select count(*) into active_member_count
-  from public.members
-  where status = 'active';
-
   insert into public.members (user_id, status, role, joined_at)
   values (
     new.id,
-    'active',
-    case when active_member_count = 0 then 'admin' else 'member' end,
+    'pending',
+    'member',
     now()
   )
   on conflict (user_id) do nothing;

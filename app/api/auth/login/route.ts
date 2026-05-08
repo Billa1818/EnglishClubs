@@ -5,6 +5,7 @@ import { loginSchema } from "@/lib/validations/auth"
 import {
   getCurrentMember,
   mapAuthError,
+  reconcileMemberAccessForUser,
   syncProfileFromUserMetadata,
 } from "@/lib/auth/server"
 
@@ -57,13 +58,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: syncResult.error }, { status: 500 })
     }
 
+    const reconcileResult = await reconcileMemberAccessForUser(signInData.user)
+    if (!reconcileResult.ok) {
+      console.warn("Reconcile member access login:", reconcileResult.error)
+    }
+    const reconciledMember = reconcileResult.ok ? reconcileResult.member : null
+
     const memberResult = await getCurrentMember(supabase, signInData.user.id)
     if (!memberResult.ok) {
       return NextResponse.json({ error: memberResult.error }, { status: 500 })
     }
 
-    const memberStatus = memberResult.member?.status ?? "pending"
-    const role = memberResult.member?.role ?? "member"
+    const memberStatus =
+      memberResult.member?.status ?? reconciledMember?.status ?? "pending"
+    const role = memberResult.member?.role ?? reconciledMember?.role ?? "member"
 
     let redirectTo = "/pending"
     if (memberStatus === "active") {
